@@ -1,0 +1,3 @@
+[submodule "odin-sokol"]
+	path = odin-sokol
+	url = https://github.com/gingerBill/odin-sokol.git
