@@ -21,29 +21,6 @@ Uniforms :: struct {
 	 inv_trans_model: linalg.Matrix4,
 }
 
-INDICES :: [?]u16{
-	0 , 11, 5 ,
-	0 , 5 , 1 ,
-	0 , 1 , 7 ,
-	0 , 7 , 10,
-	0 , 10, 11,
-	1 , 5 , 9 ,
-	5 , 11, 4 ,
-	11, 10, 2 ,
-	10, 7 , 6 ,
-	7 , 1 , 8 ,
-	3 , 9 , 4 ,
-	3 , 4 , 2 ,
-	3 , 2 , 6 ,
-	3 , 6 , 8 ,
-	3 , 8 , 9 ,
-	4 , 9 , 5 ,
-	2 , 4 , 11,
-	6 , 2 , 10,
-	8 , 6 , 7 ,
-	9 , 8 , 1 ,
-};
-
 init_callback :: proc "c" () {
 	context = runtime.default_context();
 	sg.setup({
@@ -85,7 +62,28 @@ init_callback :: proc "c" () {
 		label = "triangle-vertices",
 	});
 
-	indices := INDICES;
+	indices := [?]u16 {
+		0 , 11, 5 ,
+		0 , 5 , 1 ,
+		0 , 1 , 7 ,
+		0 , 7 , 10,
+		0 , 10, 11,
+		1 , 5 , 9 ,
+		5 , 11, 4 ,
+		11, 10, 2 ,
+		10, 7 , 6 ,
+		7 , 1 , 8 ,
+		3 , 9 , 4 ,
+		3 , 4 , 2 ,
+		3 , 2 , 6 ,
+		3 , 6 , 8 ,
+		3 , 8 , 9 ,
+		4 , 9 , 5 ,
+		2 , 4 , 11,
+		6 , 2 , 10,
+		8 , 6 , 7 ,
+		9 , 8 , 1 ,
+	};
 	state.bind.index_buffer = sg.make_buffer({
 		size = len(indices)*size_of(indices[0]),
 		content = &indices[0],
@@ -131,10 +129,10 @@ init_callback :: proc "c" () {
 				source = `
 				float4 main(float4 pos: SV_POSITION, float4 norm: NORM0): SV_TARGET0 {
 					float3 light_dir = normalize(float3(500.0, 500.0, 500.0) - pos.xyz);
-					float3 light_color = float3(1.0, 0.912, 0.802);
+					float3 light_color = float3(0.912, 0.802, 1.0);
 
 					float3 ambient = light_color * 0.3;
-					float3 diffuse = max(dot(normalize(norm.xyz), light_dir), 0.0) * light_color;
+					float3 diffuse = max(dot(normalize(norm.xyz), light_dir), 0.0) * light_color * 0.7;
 					return float4(0.37, 0.25, 0.5, 1.0) * float4((ambient + diffuse), 1.0);
 				}
 				`,
@@ -177,7 +175,7 @@ frame_callback :: proc "c" () {
 	w, h := sapp.framebuffer_size();
 	view_proj := mul(matrix4_perspective(45.0, f32(w) / f32(h), 0.00, 10.0),
 				 mul(matrix4_look_at({0.0, 1.5, 6.0}, {0.0, 0.0, 0.0}, {0.0, 1.0, 0.0}),
-					 matrix4_rotate(rot, {0.0, 0.3, 0.0})));
+					 matrix4_rotate(rot, {0.3, 0.3, 0.0})));
 	uni := Uniforms {
 		view_proj       = view_proj,
 		model           = MATRIX4_IDENTITY,
@@ -185,7 +183,7 @@ frame_callback :: proc "c" () {
 	};
 	sg.apply_uniforms(.VS, 0, &uni, size_of(uni));
 
-	sg.draw(0, len(INDICES), 1);
+	sg.draw(0, 60, 1);
 	sg.end_pass();
 	sg.commit();
 }
