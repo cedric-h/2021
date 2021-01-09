@@ -1,4 +1,1 @@
-*.swp
-*.exe
-*.exp
-*.lib
+zig-cache/
