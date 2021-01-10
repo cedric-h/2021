@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-//  cube-sapp.c
+//  game.c
 //------------------------------------------------------------------------------
 #define HANDMADE_MATH_IMPLEMENTATION
 #define HANDMADE_MATH_NO_SSE
@@ -15,63 +15,78 @@ static struct {
     sg_bindings bind;
 } state;
 
+
+typedef struct {
+	hmm_vec3 pos;
+	hmm_vec3 norm;
+} Vertex;
+
+Vertex vert_pos(float x, float y, float z) {
+	return (Vertex){
+		.pos = HMM_Vec3(x, y, z),
+		.norm = HMM_Vec3(0, 0, 0),
+	};
+}
+
 void init(void) {
     sg_setup(&(sg_desc){
         .context = sapp_sgcontext()
     });
 
-    /* cube vertex buffer */
-    float vertices[] = {
-        -1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-         1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-         1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-        -1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-
-        -1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-         1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-         1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-        -1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-
-        -1.0, -1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0,  1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0,  1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0, -1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
-
-        1.0, -1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0,  1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0,  1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0, -1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
-
-        -1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
-        -1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
-         1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
-         1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
-
-        -1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0,
-        -1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
-         1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
-         1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0
+    /* icosahedron vertex buffer */
+	float t = 1.0f + sqrtf(5.0f) / 2.0f;
+    Vertex vertices[] = {
+		vert_pos(-1.0,    t,  0.0),
+		vert_pos( 1.0,    t,  0.0),
+		vert_pos(-1.0,   -t,  0.0),
+		vert_pos( 1.0,   -t,  0.0),
+		vert_pos( 0.0, -1.0,    t),
+		vert_pos( 0.0,  1.0,    t),
+		vert_pos( 0.0, -1.0,   -t),
+		vert_pos( 0.0,  1.0,   -t),
+		vert_pos(   t,  0.0, -1.0),
+		vert_pos(   t,  0.0,  1.0),
+		vert_pos(  -t,  0.0, -1.0),
+		vert_pos(  -t,  0.0,  1.0),
     };
+	for (int i = 0; i < sizeof vertices / sizeof vertices[0]; i++) {
+		vertices[i].norm = HMM_NormalizeVec3(vertices[i].pos);
+	}
+	
     sg_buffer vbuf = sg_make_buffer(&(sg_buffer_desc){
         .size = sizeof(vertices),
         .content = vertices,
-        .label = "cube-vertices"
+        .label = "icosahedron-vertices"
     });
 
-    /* create an index buffer for the cube */
+    /* create an index buffer for the icosahedron */
     uint16_t indices[] = {
-        0, 1, 2,  0, 2, 3,
-        6, 5, 4,  7, 6, 4,
-        8, 9, 10,  8, 10, 11,
-        14, 13, 12,  15, 14, 12,
-        16, 17, 18,  16, 18, 19,
-        22, 21, 20,  23, 22, 20
+		 0, 11,  5,
+		 0,  5,  1,
+		 0,  1,  7,
+		 0,  7, 10,
+		 0, 10, 11,
+		 1,  5,  9,
+		 5, 11,  4,
+		11, 10,  2,
+		10,  7,  6,
+		 7,  1,  8,
+		 3,  9,  4,
+		 3,  4,  2,
+		 3,  2,  6,
+		 3,  6,  8,
+		 3,  8,  9,
+		 4,  9,  5,
+		 2,  4, 11,
+		 6,  2, 10,
+		 8,  6,  7,
+		 9,  8,  1,
     };
     sg_buffer ibuf = sg_make_buffer(&(sg_buffer_desc){
         .type = SG_BUFFERTYPE_INDEXBUFFER,
         .size = sizeof(indices),
         .content = indices,
-        .label = "cube-indices"
+        .label = "icosahedron-indices"
     });
 
     /* create shader */
@@ -80,11 +95,9 @@ void init(void) {
     /* create pipeline object */
     state.pip = sg_make_pipeline(&(sg_pipeline_desc){
         .layout = {
-            /* test to provide buffer stride, but no attr offsets */
-            .buffers[0].stride = 28,
             .attrs = {
                 [ATTR_vs_position].format = SG_VERTEXFORMAT_FLOAT3,
-                [ATTR_vs_color0].format   = SG_VERTEXFORMAT_FLOAT4
+                [ATTR_vs_normal].format = SG_VERTEXFORMAT_FLOAT3,
             }
         },
         .shader = shd,
@@ -94,7 +107,7 @@ void init(void) {
             .depth_write_enabled = true,
         },
         .rasterizer.cull_mode = SG_CULLMODE_BACK,
-        .label = "cube-pipeline"
+        .label = "icosahedron-pipeline"
     });
 
     /* setup resource bindings */
@@ -119,13 +132,13 @@ void frame(void) {
     vs_params.mvp = HMM_MultiplyMat4(view_proj, model);
 
     sg_pass_action pass_action = {
-        .colors[0] = { .action = SG_ACTION_CLEAR, .val = { 0.25f, 0.5f, 0.75f, 1.0f } }
+        .colors[0] = { .action = SG_ACTION_CLEAR, .val = {0.17f, 0.02f, 0.22f, 1.0f} }
     };
     sg_begin_default_pass(&pass_action, (int)w, (int)h);
     sg_apply_pipeline(state.pip);
     sg_apply_bindings(&state.bind);
     sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &vs_params, sizeof(vs_params));
-    sg_draw(0, 36, 1);
+    sg_draw(0, 60, 1);
     sg_end_pass();
     sg_commit();
 }
