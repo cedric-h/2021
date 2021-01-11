@@ -224,7 +224,7 @@ void event(const sapp_event* ev) {
 			sapp_lock_mouse(true);
 		case SAPP_EVENTTYPE_KEY_UP:
 			if (ev->key_code == SAPP_KEYCODE_ESCAPE) {
-				sapp_lock_mouse(!sapp_mouse_locked());
+				sapp_lock_mouse(false);
 			}
 		default:
 			break;
