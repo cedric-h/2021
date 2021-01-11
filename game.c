@@ -209,7 +209,7 @@ void init(void) {
 	cam.yaw_deg = 0.0f;
 	cam.turn_vel = HMM_Vec2(0.0f, 0.0f);
 
-	sapp_lock_mouse(true);
+	sapp_lock_mouse(false);
 }
 
 void event(const sapp_event* ev) {
@@ -220,6 +220,8 @@ void event(const sapp_event* ev) {
 				cam.turn_vel.Y += ev->mouse_dy * 0.025f;
 			}
 			break;
+		case SAPP_EVENTTYPE_MOUSE_UP:
+			sapp_lock_mouse(true);
 		case SAPP_EVENTTYPE_KEY_UP:
 			if (ev->key_code == SAPP_KEYCODE_ESCAPE) {
 				sapp_lock_mouse(!sapp_mouse_locked());
@@ -230,7 +232,6 @@ void event(const sapp_event* ev) {
 }
 
 void frame(void) {
-
 	cam.turn_vel = HMM_MultiplyVec2f(cam.turn_vel, 0.9f);
 	turn_cam(cam.turn_vel.X, cam.turn_vel.Y);
 	
