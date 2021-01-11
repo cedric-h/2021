@@ -208,22 +208,28 @@ void init(void) {
 	cam.pitch_deg = 0.0f;
 	cam.yaw_deg = 0.0f;
 	cam.turn_vel = HMM_Vec2(0.0f, 0.0f);
+
+	sapp_lock_mouse(true);
 }
 
 void event(const sapp_event* ev) {
 	switch (ev->type) {
 		case SAPP_EVENTTYPE_MOUSE_MOVE:
-			if (sapp_mouse_locked())
+			if (sapp_mouse_locked()) {
 				cam.turn_vel.X += ev->mouse_dx * 0.025f;
 				cam.turn_vel.Y += ev->mouse_dy * 0.025f;
+			}
 			break;
+		case SAPP_EVENTTYPE_KEY_UP:
+			if (ev->key_code == SAPP_KEYCODE_ESCAPE) {
+				sapp_lock_mouse(!sapp_mouse_locked());
+			}
 		default:
 			break;
 	}
 }
 
 void frame(void) {
-	sapp_lock_mouse(true);
 
 	cam.turn_vel = HMM_MultiplyVec2f(cam.turn_vel, 0.9f);
 	turn_cam(cam.turn_vel.X, cam.turn_vel.Y);
