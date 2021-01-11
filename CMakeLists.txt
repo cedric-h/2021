@@ -39,10 +39,20 @@ target_include_directories(sokol INTERFACE sokol)
 
 #=== EXECUTABLE: game
 
-add_custom_command(OUTPUT game.glsl.h
-    COMMAND ../sokol-tools-bin/bin/win32/sokol-shdc.exe --input ../game.glsl --output ./game.glsl.h --slang glsl330:hlsl5:metal_macos
-    DEPENDS game.glsl
-)
+if(CMAKE_SYSTEM_NAME STREQUAL Windows)
+	add_custom_command(OUTPUT game.glsl.h
+		COMMAND ../sokol-tools-bin/bin/win32/sokol-shdc.exe --input ../game.glsl --output ./game.glsl.h --slang gls330:hlsl5:metal_macos
+		DEPENDS game.glsl
+	)
+else()
+	if (CMAKE_SYSTEM_NAME STREQUAL Linux)
+		add_custom_command(OUTPUT game.glsl.h
+			COMMAND ../sokol-tools-bin/bin/linux/sokol-shdc --input ../game.glsl --output ./game.glsl.h --slang glsl330:hlsl5:metal_macos
+			DEPENDS game.glsl
+		)
+	endif()
+endif()
+
 
 set_source_files_properties(game.glsl.h PROPERTIES
     GENERATED TRUE
