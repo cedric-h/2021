@@ -208,8 +208,6 @@ void init(void) {
 	cam.pitch_deg = 0.0f;
 	cam.yaw_deg = 0.0f;
 	cam.turn_vel = HMM_Vec2(0.0f, 0.0f);
-
-	sapp_lock_mouse(false);
 }
 
 void event(const sapp_event* ev) {
