@@ -908,6 +908,12 @@ HMM_INLINE hmm_vec4 HMM_PREFIX(MultiplyVec4f)(hmm_vec4 Left, float Right)
     return (Result);
 }
 
+COVERAGE(HMM_LerpVec3, 1)
+HMM_INLINE hmm_vec3 HMM_PREFIX(LerpVec3)(hmm_vec3 A, float Time, hmm_vec3 B)
+{
+    return HMM_AddVec3(HMM_MultiplyVec3f(A, 1.0f - Time), HMM_MultiplyVec3f(B, Time));
+}
+
 COVERAGE(HMM_DivideVec2, 1)
 HMM_INLINE hmm_vec2 HMM_PREFIX(DivideVec2)(hmm_vec2 Left, hmm_vec2 Right)
 {

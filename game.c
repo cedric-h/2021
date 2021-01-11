@@ -4,10 +4,12 @@
 #define HANDMADE_MATH_IMPLEMENTATION
 #define HANDMADE_MATH_NO_SSE
 #include "HandmadeMath.h"
-#include "sokol_gfx.h"
+
 #include "sokol_app.h"
+#include "sokol_gfx.h"
 #include "sokol_glue.h"
 #include "./build/game.glsl.h"
+#include <stdio.h>
 
 static struct {
     float rx, ry;
@@ -21,46 +23,59 @@ typedef struct {
 	hmm_vec3 norm;
 } Vertex;
 
-Vertex vert_pos(float x, float y, float z) {
+Vertex vert_pos(hmm_vec3 pos) {
 	return (Vertex){
-		.pos = HMM_Vec3(x, y, z),
+		.pos = pos,
 		.norm = HMM_Vec3(0, 0, 0),
 	};
 }
 
-void init(void) {
-    sg_setup(&(sg_desc){
-        .context = sapp_sgcontext()
-    });
+#define DETAIL 3
+#define SIZE (1 << DETAIL)
+#define LEN(arr) (int) (sizeof arr / sizeof arr[0])
+typedef struct {
+	uint16_t indices[12 * SIZE * SIZE * 5];
+	Vertex vertices[12 * SIZE * SIZE];
+	uint16_t vert_writer;
+} Geometry;
+
+uint16_t vert_insert(Geometry *geo, Vertex vert) {
+	for (uint16_t i = 0; i < geo->vert_writer; i++)
+		if (HMM_EqualsVec3(geo->vertices[i].pos, vert.pos))
+			return i;
+
+	geo->vertices[geo->vert_writer] = vert;
+	return geo->vert_writer++;
+}
+
+Geometry geometry() {
+	Geometry geo;
+	geo.vert_writer = 0;
+	for (int i = 0; i < 12 * SIZE * SIZE * 5; i++) {
+		if (i < LEN(geo.vertices))
+			geo.vertices[i] = vert_pos(HMM_Vec3(0.0, 0.0, 0.0));
+		geo.indices[i] = 0;
+	}
 
     /* icosahedron vertex buffer */
 	float t = 1.0f + sqrtf(5.0f) / 2.0f;
-    Vertex vertices[] = {
-		vert_pos(-1.0,    t,  0.0),
-		vert_pos( 1.0,    t,  0.0),
-		vert_pos(-1.0,   -t,  0.0),
-		vert_pos( 1.0,   -t,  0.0),
-		vert_pos( 0.0, -1.0,    t),
-		vert_pos( 0.0,  1.0,    t),
-		vert_pos( 0.0, -1.0,   -t),
-		vert_pos( 0.0,  1.0,   -t),
-		vert_pos(   t,  0.0, -1.0),
-		vert_pos(   t,  0.0,  1.0),
-		vert_pos(  -t,  0.0, -1.0),
-		vert_pos(  -t,  0.0,  1.0),
+    hmm_vec3 vert_poses[] = {
+		HMM_Vec3(-1.0,    t,  0.0),
+		HMM_Vec3( 1.0,    t,  0.0),
+		HMM_Vec3(-1.0,   -t,  0.0),
+		HMM_Vec3( 1.0,   -t,  0.0),
+		HMM_Vec3( 0.0, -1.0,    t),
+		HMM_Vec3( 0.0,  1.0,    t),
+		HMM_Vec3( 0.0, -1.0,   -t),
+		HMM_Vec3( 0.0,  1.0,   -t),
+		HMM_Vec3(   t,  0.0, -1.0),
+		HMM_Vec3(   t,  0.0,  1.0),
+		HMM_Vec3(  -t,  0.0, -1.0),
+		HMM_Vec3(  -t,  0.0,  1.0),
     };
-	for (int i = 0; i < sizeof vertices / sizeof vertices[0]; i++) {
-		vertices[i].norm = HMM_NormalizeVec3(vertices[i].pos);
-	}
-	
-    sg_buffer vbuf = sg_make_buffer(&(sg_buffer_desc){
-        .size = sizeof(vertices),
-        .content = vertices,
-        .label = "icosahedron-vertices"
-    });
 
     /* create an index buffer for the icosahedron */
-    uint16_t indices[] = {
+    uint16_t base_indices[] = {
 		 0, 11,  5,
 		 0,  5,  1,
 		 0,  1,  7,
@@ -82,10 +97,64 @@ void init(void) {
 		 8,  6,  7,
 		 9,  8,  1,
     };
+	
+	int index_writer = 0;
+	size_t tri, x, y, rows;
+	hmm_vec3 a, b, c, ay, by, v[SIZE + 1][SIZE + 1];
+	for (tri = 0; tri < LEN(base_indices); tri += 3) {
+		a = vert_poses[base_indices[tri + 0]],
+		b = vert_poses[base_indices[tri + 1]],
+		c = vert_poses[base_indices[tri + 2]];
+		for (x = 0; x <= SIZE; x++) {
+			ay = HMM_LerpVec3(a, (float) x / (float) SIZE, c),
+			by = HMM_LerpVec3(b, (float) x / (float) SIZE, c);
+			rows = SIZE - x;
+			for (y = 0; y <= rows; y++)
+				if (y == 0 && x == SIZE)
+					v[x][y] = ay;
+				else 
+					v[x][y] = HMM_LerpVec3(ay, (float) y / (float) rows, by);
+		}
+
+		for (x = 0; x < SIZE; x++) {
+			for (y = 0; y < 2 * (SIZE - x) - 1; y++) {
+				int k = (int) floorf((float) y / 2.0f);
+				if (y % 2 == 0) {
+					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x    ][k + 1]));
+					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x + 1][k    ]));
+					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x    ][k    ]));
+				} else {
+					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x    ][k + 1]));
+					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x + 1][k + 1]));
+					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x + 1][k    ]));
+				}
+			}
+		}
+	}
+
+	for (size_t i = 0; i < LEN(geo.vertices); i++) {
+		geo.vertices[i].norm = HMM_NormalizeVec3(geo.vertices[i].pos);
+		geo.vertices[i].pos = geo.vertices[i].norm;
+	}
+
+	return geo;
+}
+
+void init(void) {
+    sg_setup(&(sg_desc){
+        .context = sapp_sgcontext()
+    });
+	
+	Geometry geo = geometry();
+    sg_buffer vbuf = sg_make_buffer(&(sg_buffer_desc){
+        .size = sizeof geo.vertices,
+        .content = geo.vertices,
+        .label = "icosahedron-vertices"
+    });
     sg_buffer ibuf = sg_make_buffer(&(sg_buffer_desc){
         .type = SG_BUFFERTYPE_INDEXBUFFER,
-        .size = sizeof(indices),
-        .content = indices,
+        .size = sizeof geo.indices,
+        .content = geo.indices,
         .label = "icosahedron-indices"
     });
 
@@ -137,8 +206,8 @@ void frame(void) {
     sg_begin_default_pass(&pass_action, (int)w, (int)h);
     sg_apply_pipeline(state.pip);
     sg_apply_bindings(&state.bind);
-    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &vs_params, sizeof(vs_params));
-    sg_draw(0, 60, 1);
+    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &vs_params, sizeof vs_params );
+    sg_draw(0, 3840, 1);
     sg_end_pass();
     sg_commit();
 }
@@ -150,6 +219,7 @@ void cleanup(void) {
 sapp_desc sokol_main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
+
     return (sapp_desc){
         .init_cb = init,
         .frame_cb = frame,

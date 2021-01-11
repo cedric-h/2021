@@ -10,8 +10,12 @@
 #else
 #define SOKOL_GLCORE33
 #endif
+
+#define SOKOL_WIN32_FORCE_MAIN
 #include "sokol_app.h"
 #include "sokol_gfx.h"
 #include "sokol_audio.h"
 #include "sokol_time.h"
 #include "sokol_glue.h"
+
+

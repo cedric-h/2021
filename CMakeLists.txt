@@ -50,6 +50,10 @@ set_source_files_properties(game.glsl.h PROPERTIES
 
 if(CMAKE_SYSTEM_NAME STREQUAL Windows)
     add_executable(game WIN32 game.c game.glsl.h)
+
+	set_target_properties(game PROPERTIES
+		LINK_FLAGS /SUBSYSTEM:CONSOLE
+	)
 else()
     add_executable(game game.c game.glsl.h)
 endif()
