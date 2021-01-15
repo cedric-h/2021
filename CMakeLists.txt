@@ -41,7 +41,7 @@ target_include_directories(sokol INTERFACE sokol)
 
 if(CMAKE_SYSTEM_NAME STREQUAL Windows)
 	add_custom_command(OUTPUT game.glsl.h
-		COMMAND ../sokol-tools-bin/bin/win32/sokol-shdc.exe --input ../game.glsl --output ./game.glsl.h --slang gls330:hlsl5:metal_macos
+		COMMAND ../sokol-tools-bin/bin/win32/sokol-shdc.exe --input ../game.glsl --output ./game.glsl.h --slang hlsl5
 		DEPENDS game.glsl
 	)
 else()

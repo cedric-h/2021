@@ -1324,6 +1324,51 @@ HMM_INLINE hmm_mat4 HMM_PREFIX(Transpose)(hmm_mat4 Matrix)
 HMM_EXTERN hmm_mat4 HMM_PREFIX(Transpose)(hmm_mat4 Matrix);
 #endif
 
+HMM_INLINE hmm_mat4 HMM_PREFIX(Invert)(hmm_mat4 From)
+{
+    hmm_mat4 Result;
+
+    float s[6], c[6];
+	s[0] = From.Elements[0][0]*From.Elements[1][1] - From.Elements[1][0]*From.Elements[0][1];
+	s[1] = From.Elements[0][0]*From.Elements[1][2] - From.Elements[1][0]*From.Elements[0][2];
+	s[2] = From.Elements[0][0]*From.Elements[1][3] - From.Elements[1][0]*From.Elements[0][3];
+	s[3] = From.Elements[0][1]*From.Elements[1][2] - From.Elements[1][1]*From.Elements[0][2];
+	s[4] = From.Elements[0][1]*From.Elements[1][3] - From.Elements[1][1]*From.Elements[0][3];
+	s[5] = From.Elements[0][2]*From.Elements[1][3] - From.Elements[1][2]*From.Elements[0][3];
+
+	c[0] = From.Elements[2][0]*From.Elements[3][1] - From.Elements[3][0]*From.Elements[2][1];
+	c[1] = From.Elements[2][0]*From.Elements[3][2] - From.Elements[3][0]*From.Elements[2][2];
+	c[2] = From.Elements[2][0]*From.Elements[3][3] - From.Elements[3][0]*From.Elements[2][3];
+	c[3] = From.Elements[2][1]*From.Elements[3][2] - From.Elements[3][1]*From.Elements[2][2];
+	c[4] = From.Elements[2][1]*From.Elements[3][3] - From.Elements[3][1]*From.Elements[2][3];
+	c[5] = From.Elements[2][2]*From.Elements[3][3] - From.Elements[3][2]*From.Elements[2][3];
+	
+	/* Assumes it is invertible */
+	float idet = 1.0f/( s[0]*c[5]-s[1]*c[4]+s[2]*c[3]+s[3]*c[2]-s[4]*c[1]+s[5]*c[0] );
+	
+	Result.Elements[0][0] = ( From.Elements[1][1] * c[5] - From.Elements[1][2] * c[4] + From.Elements[1][3] * c[3]) * idet;
+	Result.Elements[0][1] = (-From.Elements[0][1] * c[5] + From.Elements[0][2] * c[4] - From.Elements[0][3] * c[3]) * idet;
+	Result.Elements[0][2] = ( From.Elements[3][1] * s[5] - From.Elements[3][2] * s[4] + From.Elements[3][3] * s[3]) * idet;
+	Result.Elements[0][3] = (-From.Elements[2][1] * s[5] + From.Elements[2][2] * s[4] - From.Elements[2][3] * s[3]) * idet;
+
+	Result.Elements[1][0] = (-From.Elements[1][0] * c[5] + From.Elements[1][2] * c[2] - From.Elements[1][3] * c[1]) * idet;
+	Result.Elements[1][1] = ( From.Elements[0][0] * c[5] - From.Elements[0][2] * c[2] + From.Elements[0][3] * c[1]) * idet;
+	Result.Elements[1][2] = (-From.Elements[3][0] * s[5] + From.Elements[3][2] * s[2] - From.Elements[3][3] * s[1]) * idet;
+	Result.Elements[1][3] = ( From.Elements[2][0] * s[5] - From.Elements[2][2] * s[2] + From.Elements[2][3] * s[1]) * idet;
+
+	Result.Elements[2][0] = ( From.Elements[1][0] * c[4] - From.Elements[1][1] * c[2] + From.Elements[1][3] * c[0]) * idet;
+	Result.Elements[2][1] = (-From.Elements[0][0] * c[4] + From.Elements[0][1] * c[2] - From.Elements[0][3] * c[0]) * idet;
+	Result.Elements[2][2] = ( From.Elements[3][0] * s[4] - From.Elements[3][1] * s[2] + From.Elements[3][3] * s[0]) * idet;
+	Result.Elements[2][3] = (-From.Elements[2][0] * s[4] + From.Elements[2][1] * s[2] - From.Elements[2][3] * s[0]) * idet;
+
+	Result.Elements[3][0] = (-From.Elements[1][0] * c[3] + From.Elements[1][1] * c[1] - From.Elements[1][2] * c[0]) * idet;
+	Result.Elements[3][1] = ( From.Elements[0][0] * c[3] - From.Elements[0][1] * c[1] + From.Elements[0][2] * c[0]) * idet;
+	Result.Elements[3][2] = (-From.Elements[3][0] * s[3] + From.Elements[3][1] * s[1] - From.Elements[3][2] * s[0]) * idet;
+	Result.Elements[3][3] = ( From.Elements[2][0] * s[3] - From.Elements[2][1] * s[1] + From.Elements[2][2] * s[0]) * idet;
+
+    return (Result);
+}
+
 #ifdef HANDMADE_MATH__USE_SSE
 COVERAGE(HMM_AddMat4, 1)
 HMM_INLINE hmm_mat4 HMM_PREFIX(AddMat4)(hmm_mat4 Left, hmm_mat4 Right)
@@ -1597,6 +1642,15 @@ HMM_INLINE hmm_quaternion HMM_PREFIX(MultiplyQuaternion)(hmm_quaternion Left, hm
 #endif
 
     return (Result);
+}
+
+HMM_INLINE hmm_vec3 HMM_PREFIX(MultiplyQuaternionVec3)(hmm_quaternion q, hmm_vec3 v)
+{
+	hmm_vec3 t = HMM_MultiplyVec3f(HMM_Cross(q.XYZ, v), 2.0f);
+	return HMM_AddVec3(
+		HMM_AddVec3(v, HMM_MultiplyVec3f(t, q.W )),
+		HMM_Cross(q.XYZ, t)
+	);
 }
 
 COVERAGE(HMM_MultiplyQuaternionF, 1)
@@ -3225,6 +3279,33 @@ hmm_quaternion HMM_PREFIX(Mat4ToQuaternion)(hmm_mat4 M)
     Q = HMM_PREFIX(MultiplyQuaternionF)(Q, 0.5f / HMM_PREFIX(SquareRootF)(T));
 
     return Q;
+}
+
+COVERAGE(HMM_QuaternionFromYawPitchRoll, 1)
+hmm_quaternion HMM_PREFIX(QuaternionFromYawPitchRoll)(float yaw, float pitch, float roll)
+{
+    ASSERT_COVERED(HMM_QuaternionFromYawPitchRoll);
+
+    hmm_quaternion Result;
+
+	float y0 = sinf(yaw * 0.5f),
+		  w0 = cosf(yaw * 0.5f),
+	      x1 = sinf(pitch * 0.5f),
+		  w1 = cosf(pitch * 0.5f),
+	      z2 = sinf(roll * 0.5f),
+		  w2 = cosf(roll * 0.5f);
+
+	float x3 =  w0 * x1,
+	      y3 =  y0 * w1,
+	      z3 = -y0 * x1,
+	      w3 =  w0 * w1;
+
+	Result.X =  x3 * w2 + y3 * z2;
+	Result.Y = -x3 * z2 + y3 * w2;
+	Result.Z =  w3 * z2 + z3 * w2;
+	Result.W =  w3 * w2 - z3 * z2;
+
+    return (Result);
 }
 
 COVERAGE(HMM_QuaternionFromAxisAngle, 1)
