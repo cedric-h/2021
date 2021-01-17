@@ -2,7 +2,9 @@
 
 #pragma sokol @vs vs
 uniform vs_params {
-    mat4 mvp;
+    mat4 view_proj;
+    mat4 model;
+    mat4 inv_trans_model;
 };
 
 in vec4 position;
@@ -12,8 +14,8 @@ out vec3 frag_pos;
 out vec3 norm;
 
 void main() {
-    gl_Position = mvp * position;
-	frag_pos = position.xyz;
+    gl_Position = view_proj * model * position;
+	frag_pos = mat3(inv_trans_model) * position.xyz;
 	norm = normal.xyz;
 }
 #pragma sokol @end
