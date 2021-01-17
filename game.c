@@ -8,251 +8,239 @@
 #include "sokol/sokol_app.h"
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_glue.h"
-#include "./build/game.glsl.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include "renderer.h"
 
 static struct {
-    sg_pipeline pip;
-    sg_bindings bind;
-} state;
+	/* -- keys_down --
+		Sokol-app shuttles events from the operating system to our application
+		whenever keys are pressed or released, but this is not amenable to changing
+		the game state for the duration of a key press. Increasing the player's
+		forward velocity whenever a "W down" event is received makes the movement
+		jerky. Increasing the velocity on each update tick where W is down makes
+		for a much smoother experience.
+
+		Sokol provides an enum where each variant corresponds to a key. Casting
+		these enum variants into integers provides a suitable index for accessing
+		this array. For example, to see if the W key is down:
+
+		if (input.keys_down[(int) SAPP_KEYCODE_W])
+			printf("W is down!\n");
+	*/
+	bool keys_down[350];
+
+	/* -- keys_pressed --
+		Being able to query input state from anywhere in the application, not just
+		in the rapidly growing switch/case which handles events received from sokol,
+		is exceedingly freeing. One can decentralize input logic, and keep code that
+		handles input for separate concerns (user interface, player navigation, etc.)
+		near other code which addresses the same concern. To better facilitate this,
+		another array, keys_pressed, is maintained. It allows for the same kind of
+		queries as the sokol_app event switch/case, namely "was this key pressed
+		on this frame."
+		
+		There is one major difference (aside from how `keys_pressed` can be queried
+		from anywhere in the application instead of inside one particular switch/case).
+		On some operating systems, "repeat events" are sent in if a key is held for a
+		long enough duration. While sokol will still send these events to our switch/case
+		should the operating system generate them, these are not reflected when querying
+		`keys_pressed`; if a value in this array is true, then the key at that index is
+		guaranteed to have transitioned from up to down this frame. No "repeat events" are
+		taken into account.
+	*/
+	bool keys_pressed[350];
+} input;
+
+
+
+/* --------- CAMERA */
 
 typedef struct {
-	hmm_vec3 pos;
-	hmm_vec3 norm;
-} Vertex;
-
-Vertex vert_pos(hmm_vec3 pos) {
-	return (Vertex){
-		.pos = pos,
-		.norm = HMM_Vec3(0, 0, 0),
-	};
-}
-
-#define DETAIL 3
-#define SIZE (1 << DETAIL)
-#define LEN(arr) (int) (sizeof arr / sizeof arr[0])
-typedef struct {
-	uint16_t indices[12 * SIZE * SIZE * 5];
-	Vertex vertices[12 * SIZE * SIZE];
-	uint16_t vert_writer;
-} Geometry;
-
-uint16_t vert_insert(Geometry *geo, Vertex vert) {
-	for (uint16_t i = 0; i < geo->vert_writer; i++)
-		if (HMM_EqualsVec3(geo->vertices[i].pos, vert.pos))
-			return i;
-
-	geo->vertices[geo->vert_writer] = vert;
-	return geo->vert_writer++;
-}
-
-Geometry geometry() {
-	Geometry geo;
-	geo.vert_writer = 0;
-	for (int i = 0; i < 12 * SIZE * SIZE * 5; i++) {
-		if (i < LEN(geo.vertices))
-			geo.vertices[i] = vert_pos(HMM_Vec3(0.0, 0.0, 0.0));
-		geo.indices[i] = 0;
-	}
-
-    /* icosahedron vertex buffer */
-	float t = 1.0f + sqrtf(5.0f) / 2.0f;
-    hmm_vec3 vert_poses[] = {
-		HMM_Vec3(-1.0,    t,  0.0),
-		HMM_Vec3( 1.0,    t,  0.0),
-		HMM_Vec3(-1.0,   -t,  0.0),
-		HMM_Vec3( 1.0,   -t,  0.0),
-		HMM_Vec3( 0.0, -1.0,    t),
-		HMM_Vec3( 0.0,  1.0,    t),
-		HMM_Vec3( 0.0, -1.0,   -t),
-		HMM_Vec3( 0.0,  1.0,   -t),
-		HMM_Vec3(   t,  0.0, -1.0),
-		HMM_Vec3(   t,  0.0,  1.0),
-		HMM_Vec3(  -t,  0.0, -1.0),
-		HMM_Vec3(  -t,  0.0,  1.0),
-    };
-
-    /* create an index buffer for the icosahedron */
-    uint16_t base_indices[] = {
-		 0, 11,  5,
-		 0,  5,  1,
-		 0,  1,  7,
-		 0,  7, 10,
-		 0, 10, 11,
-		 1,  5,  9,
-		 5, 11,  4,
-		11, 10,  2,
-		10,  7,  6,
-		 7,  1,  8,
-		 3,  9,  4,
-		 3,  4,  2,
-		 3,  2,  6,
-		 3,  6,  8,
-		 3,  8,  9,
-		 4,  9,  5,
-		 2,  4, 11,
-		 6,  2, 10,
-		 8,  6,  7,
-		 9,  8,  1,
-    };
-	
-	int index_writer = 0;
-	size_t tri, x, y, rows;
-	hmm_vec3 a, b, c, ay, by, v[SIZE + 1][SIZE + 1];
-	for (tri = 0; tri < LEN(base_indices); tri += 3) {
-		a = vert_poses[base_indices[tri + 0]],
-		b = vert_poses[base_indices[tri + 1]],
-		c = vert_poses[base_indices[tri + 2]];
-		for (x = 0; x <= SIZE; x++) {
-			ay = HMM_LerpVec3(a, (float) x / (float) SIZE, c),
-			by = HMM_LerpVec3(b, (float) x / (float) SIZE, c);
-			rows = SIZE - x;
-			for (y = 0; y <= rows; y++)
-				if (y == 0 && x == SIZE)
-					v[x][y] = ay;
-				else 
-					v[x][y] = HMM_LerpVec3(ay, (float) y / (float) rows, by);
-		}
-
-		for (x = 0; x < SIZE; x++) {
-			for (y = 0; y < 2 * (SIZE - x) - 1; y++) {
-				int k = (int) floorf((float) y / 2.0f);
-				if (y % 2 == 0) {
-					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x    ][k + 1]));
-					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x + 1][k    ]));
-					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x    ][k    ]));
-				} else {
-					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x    ][k + 1]));
-					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x + 1][k + 1]));
-					geo.indices[index_writer++] = vert_insert(&geo, vert_pos(v[x + 1][k    ]));
-				}
-			}
-		}
-	}
-
-	for (size_t i = 0; i < LEN(geo.vertices); i++) {
-		geo.vertices[i].norm = HMM_NormalizeVec3(geo.vertices[i].pos);
-		geo.vertices[i].pos = geo.vertices[i].norm;
-	}
-
-	return geo;
-}
-
-static struct {
 	float pitch_deg, yaw_deg;
-	hmm_vec2 turn_vel;
-} cam;
+} Camera;
 
-hmm_vec3 cam_facing(void) {
-	float pitch = HMM_ToRadians(cam.pitch_deg),
-		  yaw   = HMM_ToRadians(cam.yaw_deg  );
+/* Takes a point, `p`, relative to the top (i.e. (0, 1, 0))
+	of the sphere, and rotates it so that it is relative
+	to `up` instead.
+*/
+hmm_vec3 spheretop_slide(hmm_vec3 up, hmm_vec3 p) {
+	hmm_vec3 y_axis = HMM_Vec3(0.0, 1.0, 0.0);
+	return HMM_MultiplyQuaternionVec3(
+		HMM_QuaternionBetweenVector3s(y_axis, up),
+		HMM_AddVec3(y_axis, p)
+	);
+}
 
-	return HMM_Vec3(
+/* Similar to cam_facing, but only uses the horizontal aspect of the
+	camera's orientation.
+
+	This is useful for walking in the direction the camera is facing,
+	or any other operation which need not take into account the vertical
+	component of the camera's orientation.
+*/
+hmm_vec3 cam_facing_flat(Camera *cam, hmm_vec3 up) {
+	float yaw = HMM_ToRadians(cam->yaw_deg);
+	hmm_vec3 look_pos = HMM_Vec3(sinf(yaw), 0.0, cosf(yaw));
+	return HMM_SubtractVec3(spheretop_slide(up, look_pos), up);
+}
+
+/* Returns a unit vector pointing from the eye of the camera
+	toward where the camera is currently oriented.
+*/
+hmm_vec3 cam_facing(Camera *cam, hmm_vec3 up) {
+	float pitch = HMM_ToRadians(cam->pitch_deg),
+		  yaw   = HMM_ToRadians(cam->yaw_deg  );
+
+	hmm_vec3 look_pos = HMM_Vec3(
 		sinf(yaw) * cosf(pitch),
 		sinf(pitch),
 		cosf(yaw) * cosf(pitch)
 	);
+	return HMM_SubtractVec3(spheretop_slide(up, look_pos), up);
 }
 
-void turn_cam(float yaw_delta_deg, float pitch_delta_deg) {
+/* Applies a rotation directly to the camera, making sure to keep it
+	within bounds reasonable for the average human neck.
+*/
+void turn_cam(Camera *cam, float yaw_delta_deg, float pitch_delta_deg) {
 	#define WRAP(a, b) (a) > (b) ? (a) - (b) : (a)
-	cam.pitch_deg = HMM_Clamp(-89.0f, cam.pitch_deg - pitch_delta_deg, 89.0f);
-	cam.yaw_deg = WRAP(cam.yaw_deg - yaw_delta_deg, 360.0f);
+	cam->pitch_deg = HMM_Clamp(-89.0f, cam->pitch_deg - pitch_delta_deg, 89.0f);
+	cam->yaw_deg = WRAP(cam->yaw_deg - yaw_delta_deg, 360.0f);
 }
+
+
+
+/* --------- PLAYER */
+
+typedef struct {
+	hmm_vec3 pos, vel, acc;
+	Camera camera;
+	float eye_height;
+	hmm_vec2 cam_vel;
+} Player;
+
+/* Applies the camera's turning velocity to the camera.
+	The camera's turning velocity is also gradually reduced,
+	so as to create a smooth sliding effect.
+*/
+void update_cam_vel(Camera *cam, hmm_vec2 *cam_vel) {
+	*cam_vel = HMM_MultiplyVec2f(*cam_vel, 0.9f);
+	turn_cam(cam, cam_vel->X, cam_vel->Y);
+}
+
+/* Returns a point in world space that the camera can be considered
+	to be looking out from.
+*/
+hmm_vec3 player_eye(Player *plyr, hmm_vec3 up) {
+	return HMM_AddVec3(plyr->pos, HMM_MultiplyVec3f(up, plyr->eye_height));
+}
+
+void move_player(Player *plyr, hmm_vec3 up) {
+	hmm_vec3 move_dir = HMM_Vec3(0.0, 0.0, 0.0),
+	         facing = cam_facing_flat(&plyr->camera, up),
+	         side = HMM_Cross(facing, up);
+	if (input.keys_down[(int) SAPP_KEYCODE_W])
+		move_dir = HMM_AddVec3(move_dir, facing);
+	if (input.keys_down[(int) SAPP_KEYCODE_S])
+		move_dir = HMM_SubtractVec3(move_dir, facing);
+	if (input.keys_down[(int) SAPP_KEYCODE_A])
+		move_dir = HMM_SubtractVec3(move_dir, side);
+	if (input.keys_down[(int) SAPP_KEYCODE_D])
+		move_dir = HMM_AddVec3(move_dir, side);
+
+	if (input.keys_pressed[(int) SAPP_KEYCODE_SPACE] && HMM_LengthVec3(plyr->pos) < 1.001)
+		plyr->acc = HMM_AddVec3(plyr->acc, HMM_MultiplyVec3f(up, 0.028));
+
+	float len = HMM_LengthVec3(move_dir);
+	if (len > 0.0) {
+		/* Normalizing move_dir prevents "two keys for twice the speed" */
+		hmm_vec3 norm = HMM_DivideVec3f(move_dir, len);
+		plyr->vel = HMM_AddVec3(plyr->vel, HMM_MultiplyVec3f(norm, 0.006f));
+	}
+}
+
+void update_player(Player *plyr, hmm_vec3 up) {
+	update_cam_vel(&plyr->camera, &plyr->cam_vel);
+	move_player(plyr, up);
+
+	float dist = HMM_LengthVec3(plyr->pos);
+	plyr->vel = HMM_AddVec3(plyr->vel, HMM_MultiplyVec3f(up, -0.00775 / dist));
+
+	if (dist < 1.0) {
+		float depth = 1.0 - dist;
+		plyr->pos = HMM_AddVec3(plyr->pos, HMM_MultiplyVec3f(up, depth));
+		plyr->vel = HMM_AddVec3(plyr->vel, HMM_MultiplyVec3f(up, depth * 0.01));
+	}
+
+	plyr->acc = HMM_MultiplyVec3f(plyr->acc, 0.92f);
+	plyr->vel = HMM_AddVec3(plyr->vel, plyr->acc);
+	plyr->vel = HMM_MultiplyVec3f(plyr->vel, 0.87f);
+	plyr->pos = HMM_AddVec3(plyr->pos, plyr->vel);
+}
+
+static struct {
+	Player player;
+} state;
 
 void init(void) {
-    sg_setup(&(sg_desc){
-        .context = sapp_sgcontext()
-    });
-	
-	Geometry geo = geometry();
-    sg_buffer vbuf = sg_make_buffer(&(sg_buffer_desc){
-        .size = sizeof geo.vertices,
-        .content = geo.vertices,
-        .label = "icosahedron-vertices"
-    });
-    sg_buffer ibuf = sg_make_buffer(&(sg_buffer_desc){
-        .type = SG_BUFFERTYPE_INDEXBUFFER,
-        .size = sizeof geo.indices,
-        .content = geo.indices,
-        .label = "icosahedron-indices"
-    });
+	state.player = (Player){
+		.pos = HMM_Vec3(0.0f, 1.0f, 0.0f),
+		.vel = HMM_Vec3(0.0f, 0.0f, 0.0f),
+		.eye_height = 0.75,
+		.cam_vel = HMM_Vec2(0.0f, 0.0f),
+		.camera = (Camera){
+			.pitch_deg = 0.0f,
+			.yaw_deg = 0.0f,
+		},
+	};
 
-    /* create shader */
-    sg_shader shd = sg_make_shader(cube_shader_desc());
-
-    /* create pipeline object */
-    state.pip = sg_make_pipeline(&(sg_pipeline_desc){
-        .layout = {
-            .attrs = {
-                [ATTR_vs_position].format = SG_VERTEXFORMAT_FLOAT3,
-                [ATTR_vs_normal].format = SG_VERTEXFORMAT_FLOAT3,
-            }
-        },
-        .shader = shd,
-        .index_type = SG_INDEXTYPE_UINT16,
-        .depth_stencil = {
-            .depth_compare_func = SG_COMPAREFUNC_LESS_EQUAL,
-            .depth_write_enabled = true,
-        },
-        .rasterizer.cull_mode = SG_CULLMODE_BACK,
-        .label = "icosahedron-pipeline"
-    });
-
-    /* setup resource bindings */
-    state.bind = (sg_bindings) {
-        .vertex_buffers[0] = vbuf,
-        .index_buffer = ibuf
-    };
-
-	cam.pitch_deg = 0.0f;
-	cam.yaw_deg = 0.0f;
-	cam.turn_vel = HMM_Vec2(0.0f, 0.0f);
+	init_renderer();
 }
 
 void event(const sapp_event* ev) {
 	switch (ev->type) {
 		case SAPP_EVENTTYPE_MOUSE_MOVE:
 			if (sapp_mouse_locked()) {
-				cam.turn_vel.X += ev->mouse_dx * 0.025f;
-				cam.turn_vel.Y += ev->mouse_dy * 0.025f;
+				state.player.cam_vel.X += ev->mouse_dx * 0.025f;
+				state.player.cam_vel.Y += ev->mouse_dy * 0.025f;
 			}
 			break;
 		case SAPP_EVENTTYPE_MOUSE_UP:
 			sapp_lock_mouse(true);
+			break;
+		case SAPP_EVENTTYPE_KEY_DOWN:
+			if (!input.keys_down[(int) ev->key_code])
+				input.keys_pressed[(int) ev->key_code] = true;
+			input.keys_down[(int) ev->key_code] = true;
+			break;
 		case SAPP_EVENTTYPE_KEY_UP:
+			input.keys_down[(int) ev->key_code] = false;
 			if (ev->key_code == SAPP_KEYCODE_ESCAPE) {
 				sapp_lock_mouse(false);
 			}
+			break;
 		default:
 			break;
 	}
 }
 
 void frame(void) {
-	cam.turn_vel = HMM_MultiplyVec2f(cam.turn_vel, 0.9f);
-	turn_cam(cam.turn_vel.X, cam.turn_vel.Y);
+	hmm_vec3 planet = HMM_Vec3(0.0, 0.0, 0.0);
+	hmm_vec3 up = HMM_NormalizeVec3(HMM_SubtractVec3(state.player.pos, planet));
+	update_player(&state.player, up);
 	
-    /* NOTE: the vs_params_t struct has been code-generated by the shader-code-gen */
-    vs_params_t vs_params;
-    const float w = (float) sapp_width();
-    const float h = (float) sapp_height();
-    hmm_mat4 proj = HMM_Perspective(45.0f, w/h, 0.01f, 10.0f);
-	hmm_vec3 pos = HMM_Vec3(0.0f, 0.0f, -6.0f);
-    hmm_mat4 view = HMM_LookAt(pos, HMM_AddVec3(pos, cam_facing()), HMM_Vec3(0.0f, 1.0f, 0.0f));
-    hmm_mat4 view_proj = HMM_MultiplyMat4(proj, view);
-    vs_params.mvp = view_proj;
+	start_render((CameraInfo) {
+		.up = up,
+		.eye = player_eye(&state.player, up),
+		.look = cam_facing(&state.player.camera, up),
+	});
+	draw(planet, ART_SPHERE);
+	draw(HMM_Vec3(1.0, 0.0, 0.0), ART_ICOSAHEDRON);
+	end_render();
 
-    sg_pass_action pass_action = {
-        .colors[0] = { .action = SG_ACTION_CLEAR, .val = {0.17f, 0.02f, 0.22f, 1.0f} }
-    };
-    sg_begin_default_pass(&pass_action, (int)w, (int)h);
-    sg_apply_pipeline(state.pip);
-    sg_apply_bindings(&state.bind);
-    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &vs_params, sizeof vs_params );
-    sg_draw(0, 3840, 1);
-    sg_end_pass();
-    sg_commit();
+	for (int i = 0; i < LEN(input.keys_pressed); i++)
+		input.keys_pressed[i] = false;
 }
 
 void cleanup(void) {
@@ -272,6 +260,6 @@ sapp_desc sokol_main(int argc, char* argv[]) {
         .height = 720,
         .sample_count = 4,
         .gl_force_gles2 = true,
-        .window_title = "Cube (sokol-app)",
+        .window_title = "sandsphere",
     };
 }
