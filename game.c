@@ -156,7 +156,7 @@ void move_player(Player *plyr, hmm_vec3 up) {
 	if (len > 0.0) {
 		/* Normalizing move_dir prevents "two keys for twice the speed" */
 		hmm_vec3 norm = HMM_DivideVec3f(move_dir, len);
-		plyr->vel = HMM_AddVec3(plyr->vel, HMM_MultiplyVec3f(norm, 0.006f));
+		plyr->vel = HMM_AddVec3(plyr->vel, HMM_MultiplyVec3f(norm, 0.004f));
 	}
 }
 
@@ -225,6 +225,14 @@ void event(const sapp_event* ev) {
 	}
 }
 
+float randf() {
+	return (float) rand() / (float) RAND_MAX;
+}
+
+hmm_vec3 rand_vec3() {
+	return HMM_NormalizeVec3(HMM_Vec3(0.5 - randf(), 0.5 - randf(), 0.5 - randf()));
+}
+
 void frame(void) {
 	hmm_vec3 planet = HMM_Vec3(0.0, 0.0, 0.0);
 	hmm_vec3 up = HMM_NormalizeVec3(HMM_SubtractVec3(state.player.pos, planet));
@@ -235,8 +243,13 @@ void frame(void) {
 		.eye = player_eye(&state.player, up),
 		.look = cam_facing(&state.player.camera, up),
 	});
-	draw(planet, ART_SPHERE);
-	draw(HMM_Vec3(1.0, 0.0, 0.0), ART_ICOSAHEDRON);
+	srand(10);
+	for (int i = 0; i < 10; i++)
+		draw(HMM_MultiplyMat4(
+			HMM_Translate(rand_vec3()),
+			HMM_Scale(HMM_Vec3(0.2, 0.2, 0.2)
+		)), ART_ICOSAHEDRON);
+	draw(HMM_Translate(planet), ART_SPHERE);
 	end_render();
 
 	for (int i = 0; i < LEN(input.keys_pressed); i++)
