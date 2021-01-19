@@ -12,6 +12,14 @@ Vertex vert_pos(hmm_vec3 pos) {
 	};
 }
 
+typedef struct {
+	uint16_t sphere[2];
+	uint16_t icosahedron[2];
+} ArtLocations;
+
+#define ART_SPHERE renderer.art_locations.sphere
+#define ART_ICOSAHEDRON renderer.art_locations.icosahedron
+
 #define DETAIL 4
 #define SIZE (1 << DETAIL)
 #define LEN(arr) (int) (sizeof arr / sizeof arr[0])
@@ -20,25 +28,43 @@ typedef struct {
 	Vertex vertices[SIZE * SIZE * SIZE];
 	uint16_t vert_writer;
 	uint16_t index_writer;
+	ArtLocations art_locations;
 } Geometry;
 
-void index_insert(Geometry *geo, uint16_t index) {
-	if (LEN(geo->indices) - 1 < geo->index_writer)
-		printf("ran out of index space! had: %d, need: %d\n", LEN(geo->indices), geo->index_writer);
-	geo->indices[geo->index_writer++] = index;
-}
+/* If the supplied vertex is already in the stack, this function returns its index.
+	Otherwise, the vertex is pushed onto the stack and its new index is returned.
 
-uint16_t vert_insert(Geometry *geo, Vertex vert) {
+	Note that vertices are useless if no indices point to them; you may want to
+	send the output of this function to `insert_index`.
+*/
+uint16_t insert_vert(Geometry *geo, Vertex vert) {
 	for (uint16_t i = 0; i < geo->vert_writer; i++)
 		if (HMM_EqualsVec3(geo->vertices[i].pos, vert.pos))
 			return i;
 
 	if (LEN(geo->vertices) - 1 < geo->vert_writer)
-		printf("ran out of vertex space! had: %d, need: %d\n", LEN(geo->vertices), geo->vert_writer);
+		printf(
+			"ran out of vertex space! had: %d, need: %d\n",
+			LEN(geo->vertices),
+			geo->vert_writer
+		);
 
 	geo->vertices[geo->vert_writer] = vert;
 	return geo->vert_writer++;
 }
+
+/* Pushes an index pointing to the given vertex onto the index stack. */
+void insert_index(Geometry *geo, uint16_t index) {
+	if (LEN(geo->indices) - 1 < geo->index_writer)
+		printf(
+			"ran out of index space! had: %d, need: %d\n",
+			LEN(geo->indices),
+			geo->index_writer
+		);
+
+	geo->indices[geo->index_writer++] = index;
+}
+
 
 Geometry *geometry() {
 	Geometry *geo = malloc(sizeof(Geometry));
@@ -92,6 +118,16 @@ Geometry *geometry() {
 		 9,  8,  1,
     };
 
+	/* ---- ICOSAHEDRON */
+	geo->art_locations.icosahedron[0] = geo->index_writer;
+	for (int i = 0; i < LEN(vert_poses); i++)
+		insert_vert(geo, vert_pos(vert_poses[i]));
+	for (int i = 0; i < LEN(base_indices); i++)
+		insert_index(geo, base_indices[i]);
+	geo->art_locations.icosahedron[1] = geo->index_writer;
+
+	/* ---- SPHERE */
+	geo->art_locations.sphere[0] = geo->index_writer;
 	size_t tri, x, y, rows;
 	hmm_vec3 a, b, c, ay, by, v[SIZE + 1][SIZE + 1];
 	for (tri = 0; tri < LEN(base_indices); tri += 3) {
@@ -113,17 +149,18 @@ Geometry *geometry() {
 			for (y = 0; y < 2 * (SIZE - x) - 1; y++) {
 				int k = (int) floorf((float) y / 2.0f);
 				if (y % 2 == 0) {
-					index_insert(geo, vert_insert(geo, vert_pos(v[x    ][k + 1])));
-					index_insert(geo, vert_insert(geo, vert_pos(v[x + 1][k    ])));
-					index_insert(geo, vert_insert(geo, vert_pos(v[x    ][k    ])));
+					insert_index(geo, insert_vert(geo, vert_pos(v[x    ][k + 1])));
+					insert_index(geo, insert_vert(geo, vert_pos(v[x + 1][k    ])));
+					insert_index(geo, insert_vert(geo, vert_pos(v[x    ][k    ])));
 				} else {
-					index_insert(geo, vert_insert(geo, vert_pos(v[x    ][k + 1])));
-					index_insert(geo, vert_insert(geo, vert_pos(v[x + 1][k + 1])));
-					index_insert(geo, vert_insert(geo, vert_pos(v[x + 1][k    ])));
+					insert_index(geo, insert_vert(geo, vert_pos(v[x    ][k + 1])));
+					insert_index(geo, insert_vert(geo, vert_pos(v[x + 1][k + 1])));
+					insert_index(geo, insert_vert(geo, vert_pos(v[x + 1][k    ])));
 				}
 			}
 		}
 	}
+	geo->art_locations.sphere[1] = geo->index_writer;
 
 	for (size_t i = 0; i < geo->vert_writer; i++) {
 		geo->vertices[i].norm = HMM_NormalizeVec3(geo->vertices[i].pos);
@@ -151,7 +188,7 @@ static struct {
     sg_pipeline pip;
     sg_bindings bind;
     vs_params_t vs_params;
-	uint16_t sphere_index;
+	ArtLocations art_locations;
 } renderer;
 
 void init_renderer() {
@@ -171,7 +208,7 @@ void init_renderer() {
         .content = geo->indices,
         .label = "icosahedron-indices"
     });
-	renderer.sphere_index = geo->index_writer;
+	renderer.art_locations = geo->art_locations;
 	free(geo);
 
     /* create shader */
@@ -191,7 +228,10 @@ void init_renderer() {
             .depth_compare_func = SG_COMPAREFUNC_LESS_EQUAL,
             .depth_write_enabled = true,
         },
-        .rasterizer.cull_mode = SG_CULLMODE_BACK,
+        .rasterizer = {
+			.cull_mode = SG_CULLMODE_BACK,
+			.face_winding = SG_FACEWINDING_CCW,
+		},
         .label = "icosahedron-pipeline"
     });
 
@@ -224,14 +264,9 @@ void start_render(CameraInfo cam) {
     sg_apply_bindings(&renderer.bind);
 }
 
-typedef enum {
-	ART_SPHERE,
-	ART_ICOSAHEDRON,
-} Art;
-
-void draw(hmm_vec3 where, Art what) {
-	renderer.vs_params.model = HMM_Translate(where);
-	renderer.vs_params.inv_trans_model = HMM_Invert(HMM_Transpose(renderer.vs_params.model));
+void draw(hmm_mat4 mat, uint16_t art_location[2]) {
+	renderer.vs_params.model = mat;
+	renderer.vs_params.inv_trans_model = HMM_Invert(HMM_Transpose(mat));
     sg_apply_uniforms(
 		SG_SHADERSTAGE_VS,
 		SLOT_vs_params,
@@ -239,17 +274,8 @@ void draw(hmm_vec3 where, Art what) {
 		sizeof renderer.vs_params
 	);
 
-	switch (what) {
-		case ART_SPHERE:
-			sg_draw(0, renderer.sphere_index, 1);
-			break;
-		case ART_ICOSAHEDRON:
-			sg_draw(0, 60, 1);
-			break;
-		default:
-			printf("unknown art variant?\n");
-			break;
-	}
+	//printf("start: %d, end: %d\n", (int) art_location[0], (int) art_location[1]);
+	sg_draw(art_location[0], art_location[1], 1);
 }
 
 void end_render() {
