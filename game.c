@@ -52,52 +52,102 @@ static struct {
 	bool keys_pressed[350];
 } input;
 
+typedef union {
+	struct { hmm_vec3 x, y, z; };
+	hmm_vec3 cols[3];
+	float nums[3][3];
+} Mat3;
+
 
 
 /* --------- CAMERA */
 
 typedef struct {
 	float pitch_deg, yaw_deg;
+	Mat3 rotation;
 } Camera;
 
-/* Takes a point, `p`, relative to the top (i.e. (0, 1, 0))
-	of the sphere, and rotates it so that it is relative
-	to `up` instead.
-*/
-hmm_vec3 spheretop_slide(hmm_vec3 up, hmm_vec3 p) {
-	hmm_vec3 y_axis = HMM_Vec3(0.0, 1.0, 0.0);
-	return HMM_MultiplyQuaternionVec3(
-		HMM_QuaternionBetweenVector3s(y_axis, up),
-		HMM_AddVec3(y_axis, p)
-	);
+hmm_vec3 project_plane_vector(hmm_vec3 n, hmm_vec3 bd) {
+	return HMM_SubtractVec3(bd, HMM_MultiplyVec3f(n, HMM_DotVec3(bd, n)));
 }
 
-/* Similar to cam_facing, but only uses the horizontal aspect of the
-	camera's orientation.
-
-	This is useful for walking in the direction the camera is facing,
-	or any other operation which need not take into account the vertical
-	component of the camera's orientation.
+/* Rotates the given rotation matrix so that the Y basis vector
+	points to `new_y`. The X basis vector is orthogonalized with
+	the new Y and old Z basis vector projected onto the Y plane.
 */
-hmm_vec3 cam_facing_flat(Camera *cam, hmm_vec3 up) {
-	float yaw = HMM_ToRadians(cam->yaw_deg);
-	hmm_vec3 look_pos = HMM_Vec3(sinf(yaw), 0.0, cosf(yaw));
-	return HMM_SubtractVec3(spheretop_slide(up, look_pos), up);
+void rotated_up_indefinite_basis(Mat3 *rot, hmm_vec3 up) {
+    rot->cols[1] = up;
+    rot->cols[2] = HMM_NormalizeVec3(project_plane_vector(up, rot->cols[2]));
+    rot->cols[0] = HMM_Cross(rot->cols[1], rot->cols[2]);
 }
 
-/* Returns a unit vector pointing from the eye of the camera
-	toward where the camera is currently oriented.
+/* Multiplies two Mat3s, returning a new one */
+Mat3 mat3_mul(Mat3 a, Mat3 b) {
+	Mat3 out;
+	int k, r, c;
+	for (c = 0; c < 3; ++c)
+		for (r = 0; r < 3; ++r) {
+			out.nums[c][r] = 0.0f;
+			for (k = 0; k < 3; ++k)
+				out.nums[c][r] += a.nums[k][r] * b.nums[c][k];
+		}
+	return out;
+}
+
+
+/* Returns a Mat3 oriented according to the camera's pitch and yaw.
+	Does not account for being stuck to the side of a sphere
 */
-hmm_vec3 cam_facing(Camera *cam, hmm_vec3 up) {
+Mat3 cam_mat3_local(Camera *cam) {
 	float pitch = HMM_ToRadians(cam->pitch_deg),
 		  yaw   = HMM_ToRadians(cam->yaw_deg  );
+	
+	hmm_vec3 x = HMM_Vec3(1.0, 0.0, 0.0),
+	         y = HMM_Vec3(0.0, 1.0, 0.0),
+	         z = HMM_Vec3(0.0, 0.0, 1.0);
 
-	hmm_vec3 look_pos = HMM_Vec3(
-		sinf(yaw) * cosf(pitch),
-		sinf(pitch),
-		cosf(yaw) * cosf(pitch)
+	hmm_quaternion q = HMM_MultiplyQuaternion(
+		HMM_QuaternionFromAxisAngle(y, yaw),
+		HMM_QuaternionFromAxisAngle(x, pitch)
 	);
-	return HMM_SubtractVec3(spheretop_slide(up, look_pos), up);
+
+	return (Mat3){
+		.x = HMM_MultiplyQuaternionVec3(q, x),
+		.y = HMM_MultiplyQuaternionVec3(q, y),
+		.z = HMM_MultiplyQuaternionVec3(q, z),
+	};
+}
+
+/* Returns a Mat3 oriented according to the camera's pitch and yaw,
+	which is also rotated according to the camera's rotation matrix
+	which accounts for being stuck to the side of a sphere
+*/
+Mat3 cam_mat3(Camera *cam) {
+	return mat3_mul(cam->rotation, cam_mat3_local(cam));
+}
+
+hmm_mat4 mat4_from_mat3_and_translation(Mat3 basis_vectors, hmm_vec3 pos) {
+	hmm_mat4 Result;
+	Result.Elements[0][0] = basis_vectors.x.X;
+	Result.Elements[0][1] = basis_vectors.y.X;
+	Result.Elements[0][2] = -basis_vectors.z.X;
+	Result.Elements[0][3] = 0.0;
+
+	Result.Elements[1][0] = basis_vectors.x.Y;
+	Result.Elements[1][1] = basis_vectors.y.Y;
+	Result.Elements[1][2] = -basis_vectors.z.Y;
+	Result.Elements[1][3] = 0.0;
+
+	Result.Elements[2][0] = basis_vectors.x.Z;
+	Result.Elements[2][1] = basis_vectors.y.Z;
+	Result.Elements[2][2] = -basis_vectors.z.Z;
+	Result.Elements[2][3] = 0.0;
+
+	Result.Elements[3][0] = -HMM_DotVec3(basis_vectors.x, pos);
+	Result.Elements[3][1] = -HMM_DotVec3(basis_vectors.y, pos);
+	Result.Elements[3][2] = HMM_DotVec3(basis_vectors.z, pos);
+	Result.Elements[3][3] = 1.0;
+	return Result;
 }
 
 /* Applies a rotation directly to the camera, making sure to keep it
@@ -105,8 +155,8 @@ hmm_vec3 cam_facing(Camera *cam, hmm_vec3 up) {
 */
 void turn_cam(Camera *cam, float yaw_delta_deg, float pitch_delta_deg) {
 	#define WRAP(a, b) (a) > (b) ? (a) - (b) : (a)
-	cam->pitch_deg = HMM_Clamp(-89.0f, cam->pitch_deg - pitch_delta_deg, 89.0f);
-	cam->yaw_deg = WRAP(cam->yaw_deg - yaw_delta_deg, 360.0f);
+	cam->pitch_deg = HMM_Clamp(-89.0f, cam->pitch_deg + pitch_delta_deg, 89.0f);
+	cam->yaw_deg = WRAP(cam->yaw_deg + yaw_delta_deg, 360.0f);
 }
 
 
@@ -132,14 +182,25 @@ void update_cam_vel(Camera *cam, hmm_vec2 *cam_vel) {
 /* Returns a point in world space that the camera can be considered
 	to be looking out from.
 */
-hmm_vec3 player_eye(Player *plyr, hmm_vec3 up) {
-	return HMM_AddVec3(plyr->pos, HMM_MultiplyVec3f(up, plyr->eye_height));
+hmm_vec3 player_eye(Player *plyr) {
+	return HMM_AddVec3(
+		plyr->pos,
+		HMM_MultiplyVec3f(plyr->camera.rotation.y, plyr->eye_height)
+	);
 }
 
-void move_player(Player *plyr, hmm_vec3 up) {
+/* Returns a view matrix for the player based on his position and camera */
+hmm_mat4 player_view(Player *plyr) {
+	return mat4_from_mat3_and_translation(cam_mat3(&plyr->camera), player_eye(plyr));
+}
+
+void move_player(Player *plyr) {
+	Mat3 cam_dirs = cam_mat3(&plyr->camera),
+		     axes = plyr->camera.rotation;
 	hmm_vec3 move_dir = HMM_Vec3(0.0, 0.0, 0.0),
-	         facing = cam_facing_flat(&plyr->camera, up),
-	         side = HMM_Cross(facing, up);
+	         up 	= axes.y,
+	         facing = project_plane_vector(axes.y, cam_dirs.z),
+	         side   = project_plane_vector(axes.y, cam_dirs.x);
 	if (input.keys_down[(int) SAPP_KEYCODE_W])
 		move_dir = HMM_AddVec3(move_dir, facing);
 	if (input.keys_down[(int) SAPP_KEYCODE_S])
@@ -161,8 +222,10 @@ void move_player(Player *plyr, hmm_vec3 up) {
 }
 
 void update_player(Player *plyr, hmm_vec3 up) {
+	rotated_up_indefinite_basis(&plyr->camera.rotation, up);
+
 	update_cam_vel(&plyr->camera, &plyr->cam_vel);
-	move_player(plyr, up);
+	move_player(plyr);
 
 	float dist = HMM_LengthVec3(plyr->pos);
 	plyr->vel = HMM_AddVec3(plyr->vel, HMM_MultiplyVec3f(up, -0.00775 / dist));
@@ -190,6 +253,11 @@ void init(void) {
 		.eye_height = 0.75,
 		.cam_vel = HMM_Vec2(0.0f, 0.0f),
 		.camera = (Camera){
+			.rotation = (Mat3){
+				.x = HMM_Vec3(1.0, 0.0, 0.0),
+				.y = HMM_Vec3(0.0, 1.0, 0.0),
+				.z = HMM_Vec3(0.0, 0.0, 1.0),
+			},
 			.pitch_deg = 0.0f,
 			.yaw_deg = 0.0f,
 		},
@@ -236,20 +304,19 @@ hmm_vec3 rand_vec3() {
 void frame(void) {
 	hmm_vec3 planet = HMM_Vec3(0.0, 0.0, 0.0);
 	hmm_vec3 up = HMM_NormalizeVec3(HMM_SubtractVec3(state.player.pos, planet));
+
 	update_player(&state.player, up);
 	
-	start_render((CameraInfo) {
-		.up = up,
-		.eye = player_eye(&state.player, up),
-		.look = cam_facing(&state.player.camera, up),
-	});
+	start_render(player_view(&state.player));
+
+	draw(HMM_Translate(planet), ART_SPHERE);
 	srand(10);
 	for (int i = 0; i < 10; i++)
 		draw(HMM_MultiplyMat4(
 			HMM_Translate(rand_vec3()),
 			HMM_Scale(HMM_Vec3(0.2, 0.2, 0.2)
 		)), ART_ICOSAHEDRON);
-	draw(HMM_Translate(planet), ART_SPHERE);
+
 	end_render();
 
 	for (int i = 0; i < LEN(input.keys_pressed); i++)
