@@ -230,7 +230,6 @@ void init_renderer() {
         },
         .rasterizer = {
 			.cull_mode = SG_CULLMODE_BACK,
-			.face_winding = SG_FACEWINDING_CCW,
 		},
         .label = "icosahedron-pipeline"
     });

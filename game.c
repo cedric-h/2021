@@ -107,10 +107,7 @@ Mat3 cam_mat3_local(Camera *cam) {
 	         z = HMM_Vec3(0.0, 0.0, 1.0);
 
 	hmm_quaternion q = HMM_MultiplyQuaternion(
-		HMM_MultiplyQuaternion(
-			HMM_QuaternionFromAxisAngle(z, HMM_PI32),
-			HMM_QuaternionFromAxisAngle(y, yaw)
-		),
+		HMM_QuaternionFromAxisAngle(y, yaw),
 		HMM_QuaternionFromAxisAngle(x, pitch)
 	);
 
@@ -126,8 +123,7 @@ Mat3 cam_mat3_local(Camera *cam) {
 	which accounts for being stuck to the side of a sphere
 */
 Mat3 cam_mat3(Camera *cam) {
-	return cam_mat3_local(cam);
-	//return mat3_mul(cam->rotation, cam_mat3_local(cam));
+	return mat3_mul(cam->rotation, cam_mat3_local(cam));
 }
 
 void print_vec3(hmm_vec3 v) {
@@ -153,23 +149,23 @@ hmm_mat4 mat4_from_mat3_and_translation(Mat3 basis_vectors, hmm_vec3 pos) {
 
 	hmm_mat4 Result;
 	Result.Elements[0][0] = basis_vectors.x.X;
-	Result.Elements[0][1] = basis_vectors.x.Y;
-	Result.Elements[0][2] = basis_vectors.x.Z;
+	Result.Elements[0][1] = basis_vectors.y.X;
+	Result.Elements[0][2] = -basis_vectors.z.X;
 	Result.Elements[0][3] = 0.0;
 
-	Result.Elements[1][0] = basis_vectors.y.X;
+	Result.Elements[1][0] = basis_vectors.x.Y;
 	Result.Elements[1][1] = basis_vectors.y.Y;
-	Result.Elements[1][2] = basis_vectors.y.Z;
+	Result.Elements[1][2] = -basis_vectors.z.Y;
 	Result.Elements[1][3] = 0.0;
 
-	Result.Elements[2][0] = basis_vectors.z.X;
-	Result.Elements[2][1] = basis_vectors.z.Y;
-	Result.Elements[2][2] = basis_vectors.z.Z;
+	Result.Elements[2][0] = basis_vectors.x.Z;
+	Result.Elements[2][1] = basis_vectors.y.Z;
+	Result.Elements[2][2] = -basis_vectors.z.Z;
 	Result.Elements[2][3] = 0.0;
 
-	Result.Elements[3][0] = pos.X;
-	Result.Elements[3][1] = pos.Y;
-	Result.Elements[3][2] = pos.Z;
+	Result.Elements[3][0] = -HMM_DotVec3(basis_vectors.x, pos);
+	Result.Elements[3][1] = -HMM_DotVec3(basis_vectors.y, pos);
+	Result.Elements[3][2] = HMM_DotVec3(basis_vectors.z, pos);
 	Result.Elements[3][3] = 1.0;
 	return Result;
 }
@@ -179,8 +175,8 @@ hmm_mat4 mat4_from_mat3_and_translation(Mat3 basis_vectors, hmm_vec3 pos) {
 */
 void turn_cam(Camera *cam, float yaw_delta_deg, float pitch_delta_deg) {
 	#define WRAP(a, b) (a) > (b) ? (a) - (b) : (a)
-	cam->pitch_deg = HMM_Clamp(-89.0f, cam->pitch_deg - pitch_delta_deg, 89.0f);
-	cam->yaw_deg = WRAP(cam->yaw_deg - yaw_delta_deg, 360.0f);
+	cam->pitch_deg = HMM_Clamp(-89.0f, cam->pitch_deg + pitch_delta_deg, 89.0f);
+	cam->yaw_deg = WRAP(cam->yaw_deg + yaw_delta_deg, 360.0f);
 }
 
 
@@ -227,10 +223,12 @@ hmm_mat4 player_view(Player *plyr) {
 }
 
 void move_player(Player *plyr) {
+	Mat3 cam_dirs = cam_mat3(&plyr->camera),
+		     axes = plyr->camera.rotation;
 	hmm_vec3 move_dir = HMM_Vec3(0.0, 0.0, 0.0),
-	         up 	= plyr->camera.rotation.y,
-	         facing = plyr->camera.rotation.x,
-	         side   = plyr->camera.rotation.z;
+	         up 	= axes.y,
+	         facing = project_plane_vector(axes.y, cam_dirs.z),
+	         side   = project_plane_vector(axes.y, cam_dirs.x);
 	if (input.keys_down[(int) SAPP_KEYCODE_W])
 		move_dir = HMM_AddVec3(move_dir, facing);
 	if (input.keys_down[(int) SAPP_KEYCODE_S])
@@ -252,7 +250,7 @@ void move_player(Player *plyr) {
 }
 
 void update_player(Player *plyr, hmm_vec3 up) {
-	//rotated_up_indefinite_basis(&plyr->camera.rotation, up);
+	rotated_up_indefinite_basis(&plyr->camera.rotation, up);
 
 	update_cam_vel(&plyr->camera, &plyr->cam_vel);
 	move_player(plyr);
@@ -280,7 +278,7 @@ void init(void) {
 	state.player = (Player){
 		.pos = HMM_Vec3(0.0f, 1.0f, 0.0f),
 		.vel = HMM_Vec3(0.0f, 0.0f, 0.0f),
-		.eye_height = 0.25,
+		.eye_height = 0.75,
 		.cam_vel = HMM_Vec2(0.0f, 0.0f),
 		.camera = (Camera){
 			.rotation = (Mat3){
