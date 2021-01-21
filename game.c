@@ -126,27 +126,7 @@ Mat3 cam_mat3(Camera *cam) {
 	return mat3_mul(cam->rotation, cam_mat3_local(cam));
 }
 
-void print_vec3(hmm_vec3 v) {
-	printf("(%f, %f, %f)", v.X, v.Y, v.Z);
-}
-
 hmm_mat4 mat4_from_mat3_and_translation(Mat3 basis_vectors, hmm_vec3 pos) {
-	printf("len: %f, x: ", HMM_LengthVec3(basis_vectors.x));
-	print_vec3(basis_vectors.x);
-	printf("\n");
-
-	printf("len: %f, y: ", HMM_LengthVec3(basis_vectors.y));
-	print_vec3(basis_vectors.y);
-	printf("\n");
-
-	printf("len: %f, z: ", HMM_LengthVec3(basis_vectors.z));
-	print_vec3(basis_vectors.z);
-	printf("\n");
-
-	printf("pos: ");
-	print_vec3(pos);
-	printf("\n---\n");
-
 	hmm_mat4 Result;
 	Result.Elements[0][0] = basis_vectors.x.X;
 	Result.Elements[0][1] = basis_vectors.y.X;
@@ -203,14 +183,6 @@ void update_cam_vel(Camera *cam, hmm_vec2 *cam_vel) {
 	to be looking out from.
 */
 hmm_vec3 player_eye(Player *plyr) {
-	printf("up: ");
-	print_vec3(plyr->camera.rotation.y);
-	printf("\n");
-
-	printf("foot: ");
-	print_vec3(plyr->pos);
-	printf("\n");
-
 	return HMM_AddVec3(
 		plyr->pos,
 		HMM_MultiplyVec3f(plyr->camera.rotation.y, plyr->eye_height)
