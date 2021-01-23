@@ -1,4 +1,4 @@
-#pragma sokol @ctype mat4 hmm_mat4
+#pragma sokol @ctype mat4 Mat4
 
 #pragma sokol @vs vs
 uniform vs_params {
