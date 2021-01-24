@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include "math.h"
+#include "sokol/sokol_time.h"
 #include "sokol/sokol_app.h"
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_glue.h"
@@ -57,7 +58,7 @@ static struct {
 /* --------- CAMERA */
 
 typedef struct {
-	float pitch_deg, yaw_deg;
+	f32 pitch_deg, yaw_deg;
 	Mat3 rotation;
 } Camera;
 
@@ -88,7 +89,7 @@ Mat3 cam_mat3(Camera *cam) {
 /* Applies a rotation directly to the camera, making sure to keep it
 	within bounds reasonable for the average human neck.
 */
-void turn_cam(Camera *cam, float yaw_delta_deg, float pitch_delta_deg) {
+void turn_cam(Camera *cam, f32 yaw_delta_deg, f32 pitch_delta_deg) {
 	cam->pitch_deg = clamp(-89.0f, cam->pitch_deg + pitch_delta_deg, 89.0f);
 	cam->yaw_deg = wrap(cam->yaw_deg + yaw_delta_deg, 360.0f);
 }
@@ -100,7 +101,7 @@ void turn_cam(Camera *cam, float yaw_delta_deg, float pitch_delta_deg) {
 typedef struct {
 	Vec3 pos, vel, acc;
 	Camera camera;
-	float eye_height;
+	f32 eye_height;
 	Vec2 cam_vel;
 } Player;
 
@@ -123,7 +124,7 @@ Vec3 player_eye(Player *plyr) {
 
 /* Returns a view matrix for the player based on his position and camera */
 Mat4 player_view(Player *plyr) {
-	return mat4_from_mat3_and_translation(cam_mat3(&plyr->camera), player_eye(plyr));
+	return mat3_translation4x4(cam_mat3(&plyr->camera), player_eye(plyr));
 }
 
 void move_player(Player *plyr) {
@@ -145,7 +146,7 @@ void move_player(Player *plyr) {
 	if (input.keys_pressed[(int) SAPP_KEYCODE_SPACE] && mag3(plyr->pos) < 1.001)
 		plyr->acc = add3(plyr->acc, mul3f(up, 0.028));
 
-	float len = mag3(move_dir);
+	f32 len = mag3(move_dir);
 	if (len > 0.0) {
 		/* Normalizing move_dir prevents "two keys for twice the speed" */
 		Vec3 norm = div3f(move_dir, len);
@@ -159,11 +160,11 @@ void update_player(Player *plyr, Vec3 up) {
 	update_cam_vel(&plyr->camera, &plyr->cam_vel);
 	move_player(plyr);
 
-	float dist = mag3(plyr->pos);
+	f32 dist = mag3(plyr->pos);
 	plyr->vel = add3(plyr->vel, mul3f(up, -0.00775 / dist));
 
 	if (dist < 1.0) {
-		float depth = 1.0 - dist;
+		f32 depth = 1.0 - dist;
 		plyr->pos = add3(plyr->pos, mul3f(up, depth));
 		plyr->vel = add3(plyr->vel, mul3f(up, depth * 0.01));
 	}
@@ -176,6 +177,7 @@ void update_player(Player *plyr, Vec3 up) {
 
 static struct {
 	Player player;
+	u64 start;
 } state;
 
 void init(void) {
@@ -196,6 +198,9 @@ void init(void) {
 	};
 
 	init_renderer();
+
+	stm_setup();
+	state.start = stm_now();
 }
 
 void event(const sapp_event* ev) {
@@ -226,7 +231,7 @@ void event(const sapp_event* ev) {
 }
 
 void frame(void) {
-	Vec3 planet = vec3f(0.0);
+	Vec3 planet = vec3f(0.0f);
 	Vec3 up = norm3(sub3(state.player.pos, planet));
 
 	update_player(&state.player, up);
@@ -235,9 +240,29 @@ void frame(void) {
 
 	draw(translate4x4(planet), ART_SPHERE);
 	srand(10);
-	for (int i = 0; i < 10; i++)
-		draw(mul4x4(translate4x4(rand3()), scale4x4(vec3f(0.2))),
+	for (int i = 0; i < 10; i++) {
+		/* random location on planet surface */
+		Vec3 p = rand3();
+
+		/* small icosahedron at that location */
+		draw(mul4x4(translate4x4(p), scale4x4(vec3f(0.2f))),
 			 ART_ICOSAHEDRON);
+
+		/* let's start .5 units above the icosahedron */
+		Mat4 m = scale4x4(vec3f(1.5f));
+		m = mul4x4(m, translate4x4(p));
+
+		/* same size as icosahedron (cancel out the planet scale) */
+		m = mul4x4(m, scale4x4(vec3f(0.2f / 1.5f)));
+
+		/* gentle spin over time across random axis */
+		f64 time = stm_sec(stm_since(state.start));
+		Mat4 rotation = axis_angle4x4(rand3(), time);
+		/* relative to center of cylinder, not bottom */
+		m = mul4x4(m, pivot4x4(rotation, mul3f(vec3_y(), 0.5f)));
+
+		draw(m, ART_CYLINDER);
+	}
 
 	end_render();
 
