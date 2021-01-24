@@ -40,16 +40,16 @@ target_include_directories(sokol INTERFACE sokol)
 #=== EXECUTABLE: game
 
 if(CMAKE_SYSTEM_NAME STREQUAL Windows)
-	add_custom_command(OUTPUT game.glsl.h
-		COMMAND ../sokol-tools-bin/bin/win32/sokol-shdc.exe --input ../game.glsl --output ./game.glsl.h --slang hlsl5
-		DEPENDS game.glsl
-	)
+    add_custom_command(OUTPUT game.glsl.h
+        COMMAND ../sokol-tools-bin/bin/win32/sokol-shdc.exe --input ../game.glsl --output ./game.glsl.h --slang hlsl5
+        DEPENDS game.glsl
+    )
 else()
-	if (CMAKE_SYSTEM_NAME STREQUAL Linux)
-		add_custom_command(OUTPUT game.glsl.h
-			COMMAND ../sokol-tools-bin/bin/linux/sokol-shdc --input ../game.glsl --output ./game.glsl.h --slang glsl330
-			DEPENDS game.glsl
-		)
+    if (CMAKE_SYSTEM_NAME STREQUAL Linux)
+        add_custom_command(OUTPUT game.glsl.h
+            COMMAND ../sokol-tools-bin/bin/linux/sokol-shdc --input ../game.glsl --output ./game.glsl.h --slang glsl330
+            DEPENDS game.glsl
+        )
 else()
     if (CMAKE_SYSTEM_NAME STREQUAL Darwin)
         add_custom_command(OUTPUT game.glsl.h
@@ -68,9 +68,9 @@ set_source_files_properties(game.glsl.h PROPERTIES
 if(CMAKE_SYSTEM_NAME STREQUAL Windows)
     add_executable(game WIN32 game.c game.glsl.h)
 
-	set_target_properties(game PROPERTIES
-		LINK_FLAGS /SUBSYSTEM:CONSOLE
-	)
+    set_target_properties(game PROPERTIES
+        LINK_FLAGS /SUBSYSTEM:CONSOLE
+    )
 else()
     add_executable(game game.c game.glsl.h)
 endif()
