@@ -9,7 +9,8 @@ typedef uint64_t u64;
 typedef float    f32;
 typedef double   f64;
 
-#define PI32 3.14159265359f
+#define PI32  3.14159265359f
+#define TAU32 6.28318530718f
 #define INLINE static inline
 
 INLINE float randf() {
@@ -349,6 +350,61 @@ INLINE bool eq4(Vec3 a, Vec3 b) {
 }
 
 typedef union {
+    struct {
+        union {
+            Vec3 xyz;
+            struct { f32 x, y, z; };
+        };
+
+        float w;
+    };
+
+	Vec4 xyzw;
+	f32 nums[4];
+} Quat;
+
+INLINE Quat quat(f32 x, f32 y, f32 z, f32 w) {
+	return (Quat){ .nums = { x, y, z, w } };
+}
+
+INLINE Quat vec4Q(Vec4 v) {
+	return quat(v.x, v.y, v.z, v.w);
+}
+
+INLINE Vec4 quat4(Quat q) {
+	return vec4(q.x, q.y, q.z, q.w);
+}
+
+INLINE Quat printQ(Quat q) {
+	for (int i = 0; i < 4; i++)
+		printf("%f ", q.nums[i]);
+	printf("\n");
+	return q;
+}
+
+INLINE Quat mulQ(Quat a, Quat b) {
+    return quat(( a.x * b.w) + (a.y * b.z) - (a.z * b.y) + (a.w * b.x),
+                (-a.x * b.z) + (a.y * b.w) + (a.z * b.x) + (a.w * b.y),
+                ( a.x * b.y) - (a.y * b.x) + (a.z * b.w) + (a.w * b.z),
+                (-a.x * b.x) - (a.y * b.y) - (a.z * b.z) + (a.w * b.w));
+}
+
+INLINE Vec3 mulQ3(Quat q, Vec3 v) {
+	Vec3 t = mul3f(cross3(q.xyz, v), 2.0);
+	return add3(add3(v, mul3f(t, q.w)), cross3(q.xyz, t));
+}
+
+INLINE Quat axis_angleQ(Vec3 axis, f32 angle) {
+    Vec3 axis_norm = norm3(axis);
+    f32 rot_sin = sinf(angle / 2.0f);
+
+    Quat res;
+    res.xyz = mul3f(axis_norm, rot_sin);
+    res.w = cosf(angle / 2.0f);
+    return res;
+}
+
+typedef union {
 	struct { Vec3 x, y, z; };
 	Vec3 cols[3];
 	f32 nums[3][3];
@@ -395,7 +451,7 @@ INLINE Mat4 mul4x4(Mat4 a, Mat4 b) {
 	return out;
 }
 
-INLINE Mat4 mat4_from_mat3_and_translation(Mat3 basis_vectors, Vec3 pos) {
+INLINE Mat4 mat3_translation4x4(Mat3 basis_vectors, Vec3 pos) {
 	Mat4 res;
 	res.nums[0][0] =  basis_vectors.x.x;
 	res.nums[0][1] =  basis_vectors.y.x;
@@ -446,6 +502,58 @@ INLINE Mat4 translate4x4(Vec3 pos) {
     res.nums[3][1] = pos.y;
     res.nums[3][2] = pos.z;
 	return res;
+}
+
+INLINE Mat4 pivot4x4(Mat4 m, Vec3 pivot) {
+	return mul4x4(mul4x4(translate4x4(pivot), m),
+	              translate4x4(mul3f(pivot, -1.0f)));
+}
+
+INLINE Mat4 no_translate4x4(Mat4 m) {
+    m.nums[3][0] = 0.0;
+    m.nums[3][1] = 0.0;
+    m.nums[3][2] = 0.0;
+	return m;
+}
+
+INLINE Mat4 quat4x4(Quat q) {
+	Mat4 res = diag4x4(1.0);
+    Quat norm = vec4Q(norm4(q.xyzw));
+
+    f32 xx = norm.x * norm.x,
+        yy = norm.y * norm.y,
+        zz = norm.z * norm.z,
+        xy = norm.x * norm.y,
+        xz = norm.x * norm.z,
+        yz = norm.y * norm.z,
+        wx = norm.w * norm.x,
+        wy = norm.w * norm.y,
+        wz = norm.w * norm.z;
+
+    res.nums[0][0] = 1.0f - 2.0f * (yy + zz);
+    res.nums[0][1] = 2.0f * (xy + wz);
+    res.nums[0][2] = 2.0f * (xz - wy);
+    res.nums[0][3] = 0.0f;
+
+    res.nums[1][0] = 2.0f * (xy - wz);
+    res.nums[1][1] = 1.0f - 2.0f * (xx + zz);
+    res.nums[1][2] = 2.0f * (yz + wx);
+    res.nums[1][3] = 0.0f;
+
+    res.nums[2][0] = 2.0f * (xz + wy);
+    res.nums[2][1] = 2.0f * (yz - wx);
+    res.nums[2][2] = 1.0f - 2.0f * (xx + yy);
+    res.nums[2][3] = 0.0f;
+
+    res.nums[3][0] = 0.0f;
+    res.nums[3][1] = 0.0f;
+    res.nums[3][2] = 0.0f;
+    res.nums[3][3] = 1.0f;
+	return res;
+}
+
+INLINE Mat4 axis_angle4x4(Vec3 axis, f32 angle) {
+	return quat4x4(axis_angleQ(axis, angle));
 }
 
 INLINE Mat4 print4x4(Mat4 a) {
@@ -519,51 +627,5 @@ INLINE Mat4 perspective4x4(f32 fov, f32 aspect, f32 near, f32 far) {
     res.nums[2][2] = (near + far) / (near - far);
     res.nums[3][2] = (2.0f * near * far) / (near - far);
     res.nums[3][3] = 0.0f;
-    return res;
-}
-
-typedef union {
-    struct {
-        union {
-            Vec3 xyz;
-            struct { f32 x, y, z; };
-        };
-
-        float w;
-    };
-
-	f32 nums[4];
-} Quat;
-
-INLINE Quat quat(f32 x, f32 y, f32 z, f32 w) {
-	return (Quat){ .nums = { x, y, z, w } };
-}
-
-INLINE Quat printQ(Quat q) {
-	for (int i = 0; i < 4; i++)
-		printf("%f ", q.nums[i]);
-	printf("\n");
-	return q;
-}
-
-INLINE Quat mulQ(Quat a, Quat b) {
-    return quat(( a.x * b.w) + (a.y * b.z) - (a.z * b.y) + (a.w * b.x),
-                (-a.x * b.z) + (a.y * b.w) + (a.z * b.x) + (a.w * b.y),
-                ( a.x * b.y) - (a.y * b.x) + (a.z * b.w) + (a.w * b.z),
-                (-a.x * b.x) - (a.y * b.y) - (a.z * b.z) + (a.w * b.w));
-}
-
-INLINE Vec3 mulQ3(Quat q, Vec3 v) {
-	Vec3 t = mul3f(cross3(q.xyz, v), 2.0);
-	return add3(add3(v, mul3f(t, q.w)), cross3(q.xyz, t));
-}
-
-INLINE Quat axis_angleQ(Vec3 axis, f32 angle) {
-    Vec3 axis_norm = norm3(axis);
-    f32 rot_sin = sinf(angle / 2.0f);
-
-    Quat res;
-    res.xyz = mul3f(axis_norm, rot_sin);
-    res.w = cosf(angle / 2.0f);
     return res;
 }
