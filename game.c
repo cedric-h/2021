@@ -1,6 +1,9 @@
 //------------------------------------------------------------------------------
 //  game.c
 //------------------------------------------------------------------------------
+
+#define LEN(arr) ((int) (sizeof arr / sizeof arr[0]))
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -12,6 +15,11 @@
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_glue.h"
 #include "renderer.h"
+
+void panic(char *msg) {
+    fprintf(stderr, msg);
+    sapp_request_quit();
+}
 
 static struct {
     /* -- keys_down --
@@ -71,7 +79,7 @@ Mat3 cam_mat3_local(Camera *cam) {
     
     Quat q = mulQ(axis_angleQ(vec3_y(), yaw  ),
                   axis_angleQ(vec3_x(), pitch));
-    return (Mat3){
+    return (Mat3) {
         .x = mulQ3(q, vec3_x()),
         .y = mulQ3(q, vec3_y()),
         .z = mulQ3(q, vec3_z()),
@@ -175,19 +183,53 @@ void update_player(Player *plyr, Vec3 up) {
     plyr->pos = add3(plyr->pos, plyr->vel);
 }
 
+typedef enum {
+    EntProp_Grows,
+    EntProp_COUNT,
+} EntProp;
+
+typedef enum {
+    Art_Icosahedron,
+    Art_Tree,
+} Art;
+
+typedef struct {
+    Art art;
+    Vec4 color;
+
+    u64 props[(EntProp_COUNT + 63)/64];
+    f32 growth;
+
+    Mat4 mat;
+} Ent;
+
+bool has_ent_prop(Ent *ent, EntProp prop) {
+    return !!(ent->props[prop/64] & ((u64)1 << (prop%64)));
+}
+
+void set_ent_prop(Ent *ent, EntProp prop) {
+    ent->props[prop/64] |= ((u64)1 << (prop%64));
+}
+
 static struct {
     Player player;
-    u64 start;
+    u64 start_time;
+    Ent ents[2000];
+    int ent_count;
 } state;
 
+void add_ent(Ent ent) {
+    state.ents[state.ent_count++] = ent;
+}
+
 void init(void) {
-    state.player = (Player){
+    state.player = (Player) {
         .pos = vec3(0.0f, 1.0f, 0.0f),
         .vel = vec3f(0.0f),
         .eye_height = 0.75,
         .cam_vel = vec2f(0.0f),
-        .camera = (Camera){
-            .rotation = (Mat3){
+        .camera = (Camera) {
+            .rotation = (Mat3) {
                 .x = vec3_x(),
                 .y = vec3_y(),
                 .z = vec3_z(),
@@ -199,8 +241,73 @@ void init(void) {
 
     init_renderer();
 
+    srand(9);
+    state.ent_count = 0;
+    
+    Vec3 sphere_points[SPHERE_POINTS_LEN(3)];
+    int points = fill_sphere_points(3, sphere_points);
+    Vec3 tree_pos;
+    for (int i = 0; i < points*2; i++) {
+        bool dirt = i == 0;
+        f32   out = 0.995f + 0.010f * randf(),
+            scale = 0.100f + 0.010f * randf();
+        Vec3 pos;
+        Vec4 color = vec4(0.37f, 0.25f, 0.5f, 1.0f);
+        if (i >= points) {
+            out -= scale - 0.05 + 0.1 * randf();
+            scale *= 1.08f;
+            pos = mul3f(sphere_points[i - points], -1.0f);
+            color = mul4f(color, 0.7);
+            color.w = 1.0;
+        }
+        else pos = sphere_points[i];
+
+        if (dirt) {
+            color = vec4(0.54f, 0.38f, 0.327f, 1.0f);
+            scale *= 0.54f;
+            tree_pos = mul3f(pos, 1.0 + scale);
+        };
+
+        Mat4 m = translate4x4(mul3f(pos, out));
+        m = mul4x4(m, scale4x4(vec3f(scale)));
+        m = mul4x4(m, axis_angle4x4(rand3(), randf() * PI32 * 2.0f));
+
+        Ent ent = (Ent) {
+            .mat = m,
+            .color = color,
+            .art = Art_Icosahedron,
+        };
+        #define SUB_DIRTS 3
+        #define DIRT_SCALE 0.13
+        if (dirt) {
+            Mat3 bases = ortho_bases3x3(pos);
+            for (int x = 0; x < SUB_DIRTS; x++)
+            for (int y = 0; y < SUB_DIRTS; y++)
+            for (int z = 0; z < SUB_DIRTS; z++) {
+                     /* xyz in the domain 0..(SUB_DIRTS - 1) */
+                Vec3 coord = vec3((f32) x, (f32) y, (f32) z),
+                     /* in the domain 0..1 */
+                     norm_offset = div3f(coord, (f32) (SUB_DIRTS - 1)),
+                     /* in the domain (-1..1)(DIRT_SCALE/2) */
+                     abs_offset = mul3f(sub3(vec3f(0.5f), norm_offset), DIRT_SCALE),
+                     /* facing out from the planet, not towards north pole */
+                     offset = mat3_rel3(bases, abs_offset);
+                m = mul4x4(m, axis_angle4x4(rand3(), randf() * PI32 * 2.0f));
+                ent.mat = mul4x4(translate4x4(offset), m);
+                add_ent(ent);
+            }
+        } else
+            add_ent(ent);
+    }
+    Ent tree = (Ent) {
+        .mat = translate4x4(tree_pos),
+        .art = Art_Tree,
+    };
+    set_ent_prop(&tree, EntProp_Grows);
+    add_ent(tree);
+
     stm_setup();
-    state.start = stm_now();
+    state.start_time = stm_now();
 }
 
 void event(const sapp_event* ev) {
@@ -237,31 +344,23 @@ void frame(void) {
     update_player(&state.player, up);
     
     start_render(player_view(&state.player));
-
-    draw(translate4x4(planet), ART_SPHERE);
-    srand(10);
-    for (int i = 0; i < 10; i++) {
-        /* random location on planet surface */
-        Vec3 p = rand3();
-
-        /* small icosahedron at that location */
-        draw(mul4x4(translate4x4(p), scale4x4(vec3f(0.2f))),
-             ART_ICOSAHEDRON);
-
-        /* let's start .5 units above the icosahedron */
-        Mat4 m = scale4x4(vec3f(1.5f));
-        m = mul4x4(m, translate4x4(p));
-
-        /* same size as icosahedron (cancel out the planet scale) */
-        m = mul4x4(m, scale4x4(vec3f(0.2f / 1.5f)));
-
-        /* gentle spin over time across random axis */
-        f64 time = stm_sec(stm_since(state.start));
-        Mat4 rotation = axis_angle4x4(rand3(), time);
-        /* relative to center of cylinder, not bottom */
-        m = mul4x4(m, pivot4x4(rotation, mul3f(vec3_y(), 0.5f)));
-
-        draw(m, ART_CYLINDER);
+    for (int i = 0; i < state.ent_count; i++) {
+        Ent *ent = &state.ents[i];
+        switch (ent->art) {
+            case Art_Icosahedron:
+                draw(ent->mat, ASSET_ICOSAHEDRON, ent->color);
+                break;
+            case Art_Tree:
+                Vec3 pos = ent->mat.w.xyz;
+                Mat4 m = translate4x4(pos);
+                m = mul4x4(m, mat34x4(ortho_bases3x3(norm3(pos))));
+                m = mul4x4(m, scale4x4(vec3(0.02, 0.3, 0.02)));
+                draw(m, ASSET_CYLINDER, vec4(0.29f, 0.27f, 0.175f, 1.0f));
+                break;
+            default:
+                panic("unknown art");
+                break;
+        }
     }
 
     end_render();
@@ -278,7 +377,7 @@ sapp_desc sokol_main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
 
-    return (sapp_desc){
+    return (sapp_desc) {
         .init_cb = init,
         .frame_cb = frame,
         .cleanup_cb = cleanup,
