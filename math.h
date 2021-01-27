@@ -241,12 +241,74 @@ INLINE Vec3 cross3(Vec3 a, Vec3 b) {
                 (a.x * b.y) - (a.y * b.x));
 }
 
+INLINE Vec3 ortho3(Vec3 v) {
+    f32 x = fabsf(v.x),
+        y = fabsf(v.y),
+        z = fabsf(v.z);
+
+    Vec3 other;
+    if (x < y) {
+        if (x < z) { other = vec3_x(); }
+        else       { other = vec3_z(); }
+    } else {
+        if (y < z) { other = vec3_y(); }
+        else       { other = vec3_z(); }
+    }
+    return norm3(cross3(v, other));
+}
+
 INLINE Vec3 project_plane_vec3(Vec3 n, Vec3 bd) {
     return sub3(bd, mul3f(n, dot3(bd, n)));
 }
 
+static Vec3 icosa_verts[12];
+const u16 icosa_indices[][3] = {
+     { 0, 11,  5}, { 0,  5,  1}, { 0,  1,  7},
+     { 0,  7, 10}, { 0, 10, 11}, { 1,  5,  9},
+     { 5, 11,  4}, {11, 10,  2}, {10,  7,  6},
+     { 7,  1,  8}, { 3,  9,  4}, { 3,  4,  2},
+     { 3,  2,  6}, { 3,  6,  8}, { 3,  8,  9},
+     { 4,  9,  5}, { 2,  4, 11}, { 6,  2, 10},
+     { 8,  6,  7}, { 9,  8,  1}, 
+};
+
+#define SPHERE_POINTS_LEN(detail) (((1 << detail) + 1) * ((1 << detail) + 2) * LEN(icosa_indices) / 2)
+int fill_sphere_points(size_t detail, Vec3 *out) {
+    Vec3 *start_out = out;
+    int size = 1 << detail;
+    for (int tri = 0; tri < LEN(icosa_indices); tri++) {
+        Vec3 a = icosa_verts[icosa_indices[tri][0]],
+             b = icosa_verts[icosa_indices[tri][1]],
+             c = icosa_verts[icosa_indices[tri][2]];
+        for (int x = 0; x <= size; x++) {
+            Vec3 ay = lerp3(a, (f32) x / (f32) size, c),
+                 by = lerp3(b, (f32) x / (f32) size, c);
+            int rows = size - x;
+            for (int y = 0; y <= rows; y++) {
+                Vec3 v = (y == 0 && x == size) ? ay : lerp3(ay, (f32) y / (f32) rows, by);
+                v = norm3(v);
+
+                for (int i = 0; i < (out - start_out); i++)
+                    if (mag3(sub3(start_out[i], v)) < 0.01)
+                        goto SKIP;
+                *out++ = v;
+                SKIP:;
+            }
+        }
+    }
+    return (out - start_out);
+}
+
 typedef union {
-    struct { f32 x, y, z, w; };
+    struct {
+        union {
+            Vec3 xyz;
+            struct { f32 x, y, z; };
+        };
+
+        float w;
+    };
+
     f32 nums[4];
 } Vec4;
 
@@ -433,6 +495,13 @@ INLINE void rotated_up_indefinite_basis(Mat3 *rot, Vec3 up) {
     rot->cols[0] = cross3(rot->cols[1], rot->cols[2]);
 }
 
+INLINE Mat3 ortho_bases3x3(Vec3 v) {
+    Vec3     n = norm3(v),
+           tan = ortho3(n),
+         bitan = cross3(n, tan);
+    return (Mat3) { .cols = { n, tan, bitan } };
+}
+
 typedef union {
     struct { Vec4 x, y, z, w; };
     Vec4 cols[4];
@@ -449,6 +518,18 @@ INLINE Mat4 mul4x4(Mat4 a, Mat4 b) {
                 out.nums[c][r] += a.nums[k][r] * b.nums[c][k];
         }
     return out;
+}
+
+INLINE Vec4 mul4x44(Mat4 m, Vec4 v) {
+    Vec4 res;
+    for(int x = 0; x < 4; ++x) {
+        float sum = 0;
+        for(int y = 0; y < 4; ++y)
+            sum += m.nums[y][x] * v.nums[y];
+
+        res.nums[x] = sum;
+    }
+    return res;
 }
 
 INLINE Mat4 mat3_translation4x4(Mat3 basis_vectors, Vec3 pos) {
@@ -473,6 +554,36 @@ INLINE Mat4 mat3_translation4x4(Mat3 basis_vectors, Vec3 pos) {
     res.nums[3][2] =  dot3(basis_vectors.z, pos);
     res.nums[3][3] =  1.0;
     return res;
+}
+
+INLINE Mat4 mat34x4(Mat3 bases) {
+    Mat4 res;
+    res.nums[0][0] = bases.nums[2][0];
+    res.nums[0][1] = bases.nums[2][1];
+    res.nums[0][2] = bases.nums[2][2];
+    res.nums[0][3] = 0.0;
+
+    res.nums[1][0] = bases.nums[0][0];
+    res.nums[1][1] = bases.nums[0][1];
+    res.nums[1][2] = bases.nums[0][2];
+    res.nums[1][3] = 0.0;
+
+    res.nums[2][0] = bases.nums[1][0];
+    res.nums[2][1] = bases.nums[1][1];
+    res.nums[2][2] = bases.nums[1][2];
+    res.nums[2][3] = 0.0;
+
+    res.nums[3][0] = 0.0;
+    res.nums[3][1] = 0.0;
+    res.nums[3][2] = 0.0;
+    res.nums[3][3] = 1.0;
+    return res;
+}
+
+INLINE Vec3 mat3_rel3(Mat3 bases, Vec3 v) {
+    return vec3(dot3(bases.x, v),
+                dot3(bases.y, v),
+                dot3(bases.z, v));
 }
 
 INLINE Mat4 mat4x4() {
@@ -514,6 +625,53 @@ INLINE Mat4 no_translate4x4(Mat4 m) {
     m.nums[3][1] = 0.0;
     m.nums[3][2] = 0.0;
     return m;
+}
+
+INLINE Quat mat4Q(Mat4 m) {
+    f32 t;
+    Quat q;
+
+    if (m.nums[2][2] < 0.0f) {
+        if (m.nums[0][0] > m.nums[1][1]) {
+            t = 1 + m.nums[0][0] - m.nums[1][1] - m.nums[2][2];
+            q = quat(
+                t,
+                m.nums[0][1] + m.nums[1][0],
+                m.nums[2][0] + m.nums[0][2],
+                m.nums[1][2] - m.nums[2][1]
+            );
+        } else {
+            t = 1 - m.nums[0][0] + m.nums[1][1] - m.nums[2][2];
+            q = quat(
+                m.nums[0][1] + m.nums[1][0],
+                t,
+                m.nums[1][2] + m.nums[2][1],
+                m.nums[2][0] - m.nums[0][2]
+            );
+        }
+    } else {
+        if (m.nums[0][0] < -m.nums[1][1]) {
+            t = 1 - m.nums[0][0] - m.nums[1][1] + m.nums[2][2];
+            q = quat(
+                m.nums[2][0] + m.nums[0][2],
+                m.nums[1][2] + m.nums[2][1],
+                t,
+                m.nums[0][1] - m.nums[1][0]
+            );
+        } else {
+            t = 1 + m.nums[0][0] + m.nums[1][1] + m.nums[2][2];
+            q = quat(
+                m.nums[1][2] - m.nums[2][1],
+                m.nums[2][0] - m.nums[0][2],
+                m.nums[0][1] - m.nums[1][0],
+                t
+            );
+        }
+    }
+
+    q = vec4Q(mul4f(q.xyzw, 0.5f / sqrtf(t)));
+
+    return q;
 }
 
 INLINE Mat4 quat4x4(Quat q) {
