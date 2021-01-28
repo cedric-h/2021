@@ -197,6 +197,13 @@ void init_renderer() {
             .depth_compare_func = SG_COMPAREFUNC_LESS_EQUAL,
             .depth_write_enabled = true,
         },
+        /*.blend = {
+            .enabled = true,
+            .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA, 
+            .dst_factor_rgb = SG_BLENDFACTOR_ONE, 
+            .src_factor_alpha = SG_BLENDFACTOR_SRC_ALPHA, 
+            .dst_factor_alpha = SG_BLENDFACTOR_ONE, 
+        },*/
         .rasterizer = {
             .cull_mode = SG_CULLMODE_BACK,
         },
