@@ -353,7 +353,7 @@ void frame(void) {
             case Art_Tree:
                 Vec3   pos = ent->mat.w.xyz,
                      scale = vec3(0.015f, 0.31f, 0.015f);
-                Vec4 color = vec4(0.29f, 0.22f, 0.175f, 1.0f);
+                Vec4 color = vec4(0.29f, 0.22f, 0.175f, 0.8f);
                 Mat3 bases = ortho_bases3x3(norm3(pos));
                 Mat4 m = translate4x4(pos);
                 m = mul4x4(m, mat34x4(bases));
@@ -368,7 +368,7 @@ void frame(void) {
                     Vec3 lscale = vec3(scale.x * (0.5f + af),
                                        scale.y * af + 0.2f,
                                        scale.z * (0.5f + af));
-                    draw(mul4x4(l, scale4x4(lscale)), ASSET_CYLINDER, color);
+                    draw_ghost(mul4x4(l, scale4x4(lscale)), ASSET_CYLINDER, color);
                     const f32 boffset = 0.095f;
                     for (f32 branch = boffset; branch < lscale.y; branch += 0.08f) {
                         Mat4 b = mul4x4(l, translate4x4(mul3f(vec3_y(), branch)));
