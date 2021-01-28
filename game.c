@@ -351,11 +351,62 @@ void frame(void) {
                 draw(ent->mat, ASSET_ICOSAHEDRON, ent->color);
                 break;
             case Art_Tree:
-                Vec3 pos = ent->mat.w.xyz;
+                Vec3   pos = ent->mat.w.xyz,
+                     scale = vec3(0.015f, 0.31f, 0.015f);
+                Vec4 color = vec4(0.29f, 0.22f, 0.175f, 1.0f);
+                Mat3 bases = ortho_bases3x3(norm3(pos));
                 Mat4 m = translate4x4(pos);
-                m = mul4x4(m, mat34x4(ortho_bases3x3(norm3(pos))));
-                m = mul4x4(m, scale4x4(vec3(0.02, 0.3, 0.02)));
-                draw(m, ASSET_CYLINDER, vec4(0.29f, 0.27f, 0.175f, 1.0f));
+                m = mul4x4(m, mat34x4(bases));
+                draw(mul4x4(m, scale4x4(scale)), ASSET_CYLINDER, color);
+                const f32 main_limbs[] = { 0.11f, 0.1f, 0.4f, 0.09f, 0.3f, };
+                f32 a = 0.0f;
+                for (int i = 0; i < LEN(main_limbs); a += main_limbs[i], i++) {
+                    f32 af = main_limbs[i];
+                    Mat4 l = mul4x4(m, translate4x4(mul3(vec3_y(), scale)));
+                    l = mul4x4(l, axis_angle4x4(vec3_y(), a * PI32 * 2.0f));
+                    l = mul4x4(l, axis_angle4x4(vec3_x(), 1.2f - af * 1.6f));
+                    Vec3 lscale = vec3(scale.x * (0.5f + af),
+                                       scale.y * af + 0.2f,
+                                       scale.z * (0.5f + af));
+                    draw(mul4x4(l, scale4x4(lscale)), ASSET_CYLINDER, color);
+                    const f32 boffset = 0.095f;
+                    for (f32 branch = boffset; branch < lscale.y; branch += 0.08f) {
+                        Mat4 b = mul4x4(l, translate4x4(mul3f(vec3_y(), branch)));
+                        f32 dist = 1.0 - branch / lscale.y;
+                        Vec3 bscale = mul3(lscale, vec3(0.5f, dist / 3.4f + 0.12f, 0.5f));
+                        Mat4 rot = axis_angle4x4(vec3_y(), -PI32 * 0.5f);
+                        rot = mul4x4(rot, axis_angle4x4(vec3_x(), -PI32 * 0.1f));
+                        f32 twist = 0.3f;
+
+                        Mat4 lb = mul4x4(b, axis_angle4x4(vec3_z(),  PI32 * twist));
+                        lb = mul4x4(lb, rot);
+                        draw(mul4x4(lb, scale4x4(bscale)), ASSET_CYLINDER, color);
+
+                        Mat4 rb = mul4x4(b, axis_angle4x4(vec3_z(), -PI32 * twist));
+                        rb = mul4x4(rb, rot);
+                        draw(mul4x4(rb, scale4x4(bscale)), ASSET_CYLINDER, color);
+
+                        const f32 leoffset = 0.03f;
+                        for (f32 dir = -1.0; dir <= 1.0; dir += 2.0)
+                        for (f32 leaf = leoffset; leaf < bscale.y; leaf += 0.028f) {
+                            Vec4 color = vec4(0.38f, 0.54f, 0.327f, 1.0f);
+                            Mat4 pos         = translate4x4(vec3(        0.0f, leaf, 0.0f));
+
+                            f32 dist = 1.0 - leaf / bscale.y;
+                            Vec3 lescale = mul3f(vec3(0.025f, 0.002f, 0.015f), 0.6 + dist * 0.8);
+                            Mat4 center_leaf = translate4x4(mul3(mul3f(vec3_x(), dir), lescale)),
+                                 rot = axis_angle4x4(vec3_x(), PI32 * (0.5 + dist * 0.3f));
+                            rot = mul4x4(rot, axis_angle4x4(vec3_z(), PI32 * dist * 0.1f));
+                            Mat4 leafter = mul4x4(mul4x4(rot, center_leaf), scale4x4(lescale));
+
+                            Mat4 lle = mul4x4(lb, pos);
+                            draw(mul4x4(lle, leafter), ASSET_CYLINDER, color);
+
+                            Mat4 rle = mul4x4(rb, pos);
+                            draw(mul4x4(rle, leafter), ASSET_CYLINDER, color);
+                        }
+                    }
+                }
                 break;
             default:
                 panic("unknown art");
