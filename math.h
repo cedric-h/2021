@@ -261,6 +261,19 @@ INLINE Vec3 project_plane_vec3(Vec3 n, Vec3 bd) {
     return sub3(bd, mul3f(n, dot3(bd, n)));
 }
 
+typedef struct {
+    Vec3 line_origin;
+    Vec3 line;
+    Vec3 plane_origin;
+    Vec3 plane_normal;
+} LinePlaneIntersect;
+
+INLINE Vec3 line_plane_intersect(LinePlaneIntersect p) {
+    f32 d = dot3(sub3(p.plane_origin, p.line_origin), p.plane_normal)
+               / dot3(p.line, p.plane_normal);
+    return add3(p.line_origin, mul3f(p.line, d));
+}
+
 static Vec3 icosa_verts[12];
 const u16 icosa_indices[][3] = {
      { 0, 11,  5}, { 0,  5,  1}, { 0,  1,  7},
