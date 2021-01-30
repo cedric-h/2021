@@ -222,9 +222,68 @@ void add_ent(Ent ent) {
     state.ents[state.ent_count++] = ent;
 }
 
+Vec3 spawn_planet_with_tree() {
+    Vec3 sphere_points[SPHERE_POINTS_LEN(3)];
+    int points = fill_sphere_points(3, sphere_points);
+    Vec3 tree_pos;
+    for (int i = 0; i < points*2; i++) {
+        bool dirt = i == 0;
+        f32   out = 0.995f + 0.010f * randf(),
+            scale = 0.100f + 0.010f * randf();
+        Vec3 pos;
+        Vec4 color = vec4(0.37f, 0.25f, 0.5f, 1.0f);
+        if (i >= points) {
+            out -= scale - 0.05 + 0.1 * randf();
+            scale *= 1.08f;
+            pos = mul3f(sphere_points[i - points], -1.0f);
+            color = mul4f(color, 0.7);
+            color.w = 1.0;
+        }
+        else pos = sphere_points[i];
+
+        if (dirt) {
+            color = vec4(0.54f, 0.38f, 0.327f, 1.0f);
+            scale *= 0.54f;
+            tree_pos = mul3f(pos, 1.0 + scale);
+        };
+
+        Mat4 m = translate4x4(mul3f(pos, out));
+        m = mul4x4(m, scale4x4(vec3f(scale)));
+        m = mul4x4(m, axis_angle4x4(rand3(), randf() * PI32 * 2.0f));
+
+        Ent ent = (Ent) {
+            .mat = m,
+            .color = color,
+            .art = Art_Icosahedron,
+        };
+        #define SUB_DIRTS 3
+        #define DIRT_SCALE 0.13
+        if (dirt) {
+            Mat3 bases = ortho_bases3x3(pos);
+            for (int x = 0; x < SUB_DIRTS; x++)
+            for (int y = 0; y < SUB_DIRTS; y++)
+            for (int z = 0; z < SUB_DIRTS; z++) {
+                     /* xyz in the domain 0..(SUB_DIRTS - 1) */
+                Vec3 coord = vec3((f32) x, (f32) y, (f32) z),
+                     /* in the domain 0..1 */
+                     norm_offset = div3f(coord, (f32) (SUB_DIRTS - 1)),
+                     /* in the domain (-1..1)(DIRT_SCALE/2) */
+                     abs_offset = mul3f(sub3(vec3f(0.5f), norm_offset), DIRT_SCALE),
+                     /* facing out from the planet, not towards north pole */
+                     offset = mat3_rel3(bases, abs_offset);
+                m = mul4x4(m, axis_angle4x4(rand3(), randf() * PI32 * 2.0f));
+                ent.mat = mul4x4(translate4x4(offset), m);
+                add_ent(ent);
+            }
+        } else
+            add_ent(ent);
+    }
+    return tree_pos;
+}
+
 void spawn_tree(Vec3 pos) {
     Vec3 scale = vec3(0.015f, 0.31f, 0.015f);
-    Vec4 color = vec4(0.29f, 0.22f, 0.175f, 0.8f);
+    Vec4 color = vec4(0.29f, 0.22f, 0.175f, 1.0f);
     Mat3 bases = ortho_bases3x3(norm3(pos));
     Mat4 m = translate4x4(pos);
     m = mul4x4(m, mat34x4(bases));
@@ -316,61 +375,7 @@ void init(void) {
     srand(9);
     state.ent_count = 0;
 
-    Vec3 sphere_points[SPHERE_POINTS_LEN(3)];
-    int points = fill_sphere_points(3, sphere_points);
-    Vec3 tree_pos;
-    for (int i = 0; i < points*2; i++) {
-        bool dirt = i == 0;
-        f32   out = 0.995f + 0.010f * randf(),
-            scale = 0.100f + 0.010f * randf();
-        Vec3 pos;
-        Vec4 color = vec4(0.37f, 0.25f, 0.5f, 1.0f);
-        if (i >= points) {
-            out -= scale - 0.05 + 0.1 * randf();
-            scale *= 1.08f;
-            pos = mul3f(sphere_points[i - points], -1.0f);
-            color = mul4f(color, 0.7);
-            color.w = 1.0;
-        }
-        else pos = sphere_points[i];
-
-        if (dirt) {
-            color = vec4(0.54f, 0.38f, 0.327f, 1.0f);
-            scale *= 0.54f;
-            tree_pos = mul3f(pos, 1.0 + scale);
-        };
-
-        Mat4 m = translate4x4(mul3f(pos, out));
-        m = mul4x4(m, scale4x4(vec3f(scale)));
-        m = mul4x4(m, axis_angle4x4(rand3(), randf() * PI32 * 2.0f));
-
-        Ent ent = (Ent) {
-            .mat = m,
-            .color = color,
-            .art = Art_Icosahedron,
-        };
-        #define SUB_DIRTS 3
-        #define DIRT_SCALE 0.13
-        if (dirt) {
-            Mat3 bases = ortho_bases3x3(pos);
-            for (int x = 0; x < SUB_DIRTS; x++)
-            for (int y = 0; y < SUB_DIRTS; y++)
-            for (int z = 0; z < SUB_DIRTS; z++) {
-                     /* xyz in the domain 0..(SUB_DIRTS - 1) */
-                Vec3 coord = vec3((f32) x, (f32) y, (f32) z),
-                     /* in the domain 0..1 */
-                     norm_offset = div3f(coord, (f32) (SUB_DIRTS - 1)),
-                     /* in the domain (-1..1)(DIRT_SCALE/2) */
-                     abs_offset = mul3f(sub3(vec3f(0.5f), norm_offset), DIRT_SCALE),
-                     /* facing out from the planet, not towards north pole */
-                     offset = mat3_rel3(bases, abs_offset);
-                m = mul4x4(m, axis_angle4x4(rand3(), randf() * PI32 * 2.0f));
-                ent.mat = mul4x4(translate4x4(offset), m);
-                add_ent(ent);
-            }
-        } else
-            add_ent(ent);
-    }
+    Vec3 tree_pos = spawn_planet_with_tree();
     spawn_tree(tree_pos);
     
     stm_setup();
@@ -417,20 +422,12 @@ void frame(void) {
             case Art_Icosahedron:
                 draw(ent->mat, ASSET_ICOSAHEDRON, ent->color);
                 break;
-            case Art_Cylinder:
-                Vec3 bottom = ent->mat.w.xyz,
-                        top = mul4x44(ent->mat, vec4(0.0, 1.0, 0.0, 1.0)).xyz,
-                     b_side = mul4x44(ent->mat, vec4(1.0, 0.0, 0.0, 1.0)).xyz,
-                        hit = line_plane_intersect((LinePlaneIntersect) {
-                            .line_origin  = player_eye(&state.player),
-                            .line         = cam_mat3(&state.player.camera).z,
-                            .plane_origin = bottom,
-                            .plane_normal = norm3(sub3(top, bottom)),
-                        });
-                f32 radius = mag3(sub3(bottom, b_side)),
-                      dist = mag3(sub3(hit, bottom));
+            case Art_Cylinder:;
 
-                if (dist < radius)
+                Ray cam = (Ray) { .origin = player_eye(&state.player), 
+                                  .vector = cam_mat3(&state.player.camera).z };
+
+                if (ray_hit_cylinder(cam, ent->mat))
                     draw_ghost(ent->mat, ASSET_CYLINDER, ent->color);
                 else
                     draw(ent->mat, ASSET_CYLINDER, ent->color);
