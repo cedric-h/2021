@@ -63,6 +63,57 @@ static struct {
 
 
 
+/* --------- Entities */
+
+typedef enum {
+    EntProp_Active,
+    EntProp_Selectable,
+    EntProp_Selected,
+    EntProp_COUNT,
+} EntProp;
+
+typedef enum {
+    Art_Icosahedron,
+    Art_Cylinder,
+} Art;
+
+typedef int EntId;
+typedef struct {
+    Art art;
+    Vec4 color;
+
+    u64 props[(EntProp_COUNT + 63)/64];
+
+    EntId parent, children[50];
+    int child_count;
+
+    Mat4 mat;
+} Ent;
+
+INLINE bool has_ent_prop(Ent *ent, EntProp prop) {
+    return !!(ent->props[prop/64] & ((u64)1 << (prop%64)));
+}
+
+INLINE bool toggle_ent_prop(Ent *ent, EntProp prop) {
+    bool before = has_ent_prop(ent, prop);
+    ent->props[prop/64] ^= (u64)1 << (prop%64);
+    return before;
+}
+
+INLINE bool take_ent_prop(Ent *ent, EntProp prop) {
+    bool before = has_ent_prop(ent, prop);
+    ent->props[prop/64] &= ~((u64)1 << (prop%64));
+    return before;
+}
+
+INLINE bool give_ent_prop(Ent *ent, EntProp prop) {
+    bool before = has_ent_prop(ent, prop);
+    ent->props[prop/64] |= (u64)1 << (prop%64);
+    return before;
+}
+
+
+
 /* --------- CAMERA */
 
 typedef struct {
@@ -111,6 +162,7 @@ typedef struct {
     Camera camera;
     f32 eye_height;
     Vec2 cam_vel;
+    EntId grabbed;
 } Player;
 
 /* Applies the camera's turning velocity to the camera.
@@ -183,47 +235,21 @@ void update_player(Player *plyr, Vec3 up) {
     plyr->pos = add3(plyr->pos, plyr->vel);
 }
 
-typedef enum {
-    EntProp_Active,
-    EntProp_Selectable,
-    EntProp_COUNT,
-} EntProp;
 
-typedef enum {
-    Art_Icosahedron,
-    Art_Cylinder,
-} Art;
 
-typedef struct {
-    Art art;
-    Vec4 color;
 
-    u64 props[(EntProp_COUNT + 63)/64];
-
-    int parent, children[50];
-    int child_count;
-
-    Mat4 mat;
-} Ent;
-
-bool has_ent_prop(Ent *ent, EntProp prop) {
-    return !!(ent->props[prop/64] & ((u64)1 << (prop%64)));
-}
-
-void set_ent_prop(Ent *ent, EntProp prop) {
-    ent->props[prop/64] |= ((u64)1 << (prop%64));
-}
+/* --------- WORLD */
 
 static struct {
     Player player;
     u64 start_time;
     Ent ents[2000];
     int ent_count;
-} state;
+} world;
 
 int add_ent(Ent ent) {
-    int slot = state.ent_count++;
-    state.ents[slot] = ent;
+    int slot = world.ent_count++;
+    world.ents[slot] = ent;
     return slot;
 }
 
@@ -299,7 +325,7 @@ void spawn_tree(Vec3 pos) {
     };
     tree.mat = mul4x4(m, scale4x4(scale));
     add_ent(tree);
-    set_ent_prop(&tree, EntProp_Selectable);
+    give_ent_prop(&tree, EntProp_Selectable);
 
     const f32 main_limbs[] = { 0.11f, 0.1f, 0.4f, 0.09f, 0.3f, };
     f32 a = 0.0f;
@@ -311,9 +337,9 @@ void spawn_tree(Vec3 pos) {
         Vec3 lscale = vec3(scale.x * (0.5f + af),
                            scale.y * af + 0.2f,
                            scale.z * (0.5f + af));
-        int limb = add_ent(tree);
-        state.ents[limb].mat = mul4x4(l, scale4x4(lscale));
-        state.ents[limb].parent = limb;
+        EntId limb = add_ent(tree);
+        world.ents[limb].mat = mul4x4(l, scale4x4(lscale));
+        world.ents[limb].parent = limb;
         tree.parent = limb;
         const f32 boffset = 0.095f;
         for (f32 branch = boffset; branch < lscale.y; branch += 0.08f) {
@@ -326,15 +352,15 @@ void spawn_tree(Vec3 pos) {
 
             Mat4 lb = mul4x4(b, axis_angle4x4(vec3_z(),  PI32 * twist));
             lb = mul4x4(lb, rot);
-            int branch_l = add_ent(tree);
-            state.ents[branch_l].mat = mul4x4(lb, scale4x4(bscale));
-            state.ents[limb].children[state.ents[limb].child_count++] = branch_l;
+            EntId branch_l = add_ent(tree);
+            world.ents[branch_l].mat = mul4x4(lb, scale4x4(bscale));
+            world.ents[limb].children[world.ents[limb].child_count++] = branch_l;
 
             Mat4 rb = mul4x4(b, axis_angle4x4(vec3_z(), -PI32 * twist));
             rb = mul4x4(rb, rot);
-            int branch_r = add_ent(tree);
-            state.ents[branch_r].mat = mul4x4(rb, scale4x4(bscale));
-            state.ents[limb].children[state.ents[limb].child_count++] = branch_r;
+            EntId branch_r = add_ent(tree);
+            world.ents[branch_r].mat = mul4x4(rb, scale4x4(bscale));
+            world.ents[limb].children[world.ents[limb].child_count++] = branch_r;
 
             const f32 leoffset = 0.03f;
             for (f32 dir = -1.0; dir <= 1.0; dir += 2.0)
@@ -349,23 +375,23 @@ void spawn_tree(Vec3 pos) {
                 rot = mul4x4(rot, axis_angle4x4(vec3_z(), PI32 * dist * 0.1f));
                 Mat4 leafter = mul4x4(mul4x4(rot, center_leaf), scale4x4(lescale));
 
-                int leaf_l = add_ent(tree);
-                state.ents[leaf_l].color = color;
-                state.ents[leaf_l].mat = mul4x4(mul4x4(lb, pos), leafter);
-                state.ents[limb].children[state.ents[limb].child_count++] = leaf_l;
+                EntId leaf_l = add_ent(tree);
+                world.ents[leaf_l].color = color;
+                world.ents[leaf_l].mat = mul4x4(mul4x4(lb, pos), leafter);
+                world.ents[limb].children[world.ents[limb].child_count++] = leaf_l;
 
-                int leaf_r = add_ent(tree);
-                state.ents[leaf_r].color = color;
-                state.ents[leaf_r].mat = mul4x4(mul4x4(rb, pos), leafter);
-                state.ents[limb].children[state.ents[limb].child_count++] = leaf_r;
+                EntId leaf_r = add_ent(tree);
+                world.ents[leaf_r].color = color;
+                world.ents[leaf_r].mat = mul4x4(mul4x4(rb, pos), leafter);
+                world.ents[limb].children[world.ents[limb].child_count++] = leaf_r;
             }
         }
-        printf("children: %d\n", state.ents[limb].child_count);
+        printf("children: %d\n", world.ents[limb].child_count);
     }
 }
 
 void init(void) {
-    state.player = (Player) {
+    world.player = (Player) {
         .pos = vec3(0.0f, 1.0f, 0.0f),
         .vel = vec3f(0.0f),
         .eye_height = 0.75,
@@ -379,26 +405,27 @@ void init(void) {
             .pitch_deg = 0.0f,
             .yaw_deg = 0.0f,
         },
+        .grabbed = -1,
     };
 
     init_renderer();
 
     srand(9);
-    state.ent_count = 0;
+    world.ent_count = 0;
 
     Vec3 tree_pos = spawn_planet_with_tree();
     spawn_tree(tree_pos);
     
     stm_setup();
-    state.start_time = stm_now();
+    world.start_time = stm_now();
 }
 
 void event(const sapp_event* ev) {
     switch (ev->type) {
         case SAPP_EVENTTYPE_MOUSE_MOVE:
             if (sapp_mouse_locked()) {
-                state.player.cam_vel.x += ev->mouse_dx * 0.025f;
-                state.player.cam_vel.y += ev->mouse_dy * 0.025f;
+                world.player.cam_vel.x += ev->mouse_dx * 0.025f;
+                world.player.cam_vel.y += ev->mouse_dy * 0.025f;
             }
             break;
         case SAPP_EVENTTYPE_MOUSE_UP:
@@ -422,18 +449,16 @@ void event(const sapp_event* ev) {
 
 void frame(void) {
     Vec3 planet = vec3f(0.0f);
-    Vec3 up = norm3(sub3(state.player.pos, planet));
+    Vec3 up = norm3(sub3(world.player.pos, planet));
 
-    update_player(&state.player, up);
-    
-    int selected[50], *selected_writer = selected;
-    Ray cam = (Ray) { .origin = player_eye(&state.player), 
-                      .vector = cam_mat3(&state.player.camera).z };
+    Ray cam = (Ray) { .origin = player_eye(&world.player), 
+                      .vector = cam_mat3(&world.player.camera).z };
     f32 hit_dist = 1.0;
-    int hit_ent = -1;
-    for (int i = 0; i < state.ent_count; i++) {
-        Ent *ent = &state.ents[i];
+    EntId hit_ent = -1;
+    for (int i = 0; i < world.ent_count; i++) {
+        Ent *ent = &world.ents[i];
 
+        take_ent_prop(ent, EntProp_Selected);
         if (!has_ent_prop(ent, EntProp_Selectable))
             continue;
 
@@ -449,24 +474,24 @@ void frame(void) {
         }
     }
     if (hit_ent > -1) {
-        *selected_writer++ = hit_ent;
-        for (int i = 0; i < state.ents[hit_ent].child_count; i++)
-            *selected_writer++ = state.ents[hit_ent].children[i];
+        Ent *hit = &world.ents[hit_ent];
+        give_ent_prop(hit, EntProp_Selected);
+        for (int i = 0; i < hit->child_count; i++)
+            give_ent_prop(&world.ents[hit->children[i]], EntProp_Selected);
     }
 
-    start_render(player_view(&state.player));
-    for (int i = 0; i < state.ent_count; i++) {
-        Ent *ent = &state.ents[i];
+    update_player(&world.player, up);
+
+    start_render(player_view(&world.player));
+    for (int i = 0; i < world.ent_count; i++) {
+        Ent *ent = &world.ents[i];
         switch (ent->art) {
             case Art_Icosahedron:
                 draw(ent->mat, ASSET_ICOSAHEDRON, ent->color);
                 break;
             case Art_Cylinder:;
-                for (int si = 0; si < (selected_writer - selected); si++)
-                    if (selected[si] == i) {
-                        draw_ghost(ent->mat, ASSET_CYLINDER, ent->color);
-                        break;
-                    }
+                if (has_ent_prop(ent, EntProp_Selected))
+                    draw_ghost(ent->mat, ASSET_CYLINDER, ent->color);
 
                 draw(ent->mat, ASSET_CYLINDER, ent->color);
                 break;

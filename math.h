@@ -816,6 +816,16 @@ INLINE Mat4 perspective4x4(f32 fov, f32 aspect, f32 near, f32 far) {
     return res;
 }
 
+/* This is super inefficient and innaccurate,
+    it could be made much more efficient by multiplying the ray into
+    local space instead of bringing key points into world space,
+    and by using line-point distance for checks against body of the cylinder.
+    this works well enough for selecting parts of the tree, though,
+    so for now it stays.
+
+    The test against the center disc of the cylinder could be done
+    instead for the top and bottom discs for a higher fidelity check.
+*/
 INLINE void ray_hit_cylinder(Ray ray, Mat4 mat, Vec3* hit) {
     Vec3     bottom = mat.w.xyz,
                 top = mul4x44(mat, vec4(0.0f, 1.0f, 0.0f, 1.0f)).xyz,
