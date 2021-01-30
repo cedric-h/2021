@@ -816,7 +816,7 @@ INLINE Mat4 perspective4x4(f32 fov, f32 aspect, f32 near, f32 far) {
     return res;
 }
 
-INLINE bool ray_hit_cylinder(Ray ray, Mat4 mat) {
+INLINE void ray_hit_cylinder(Ray ray, Mat4 mat, Vec3* hit) {
     Vec3     bottom = mat.w.xyz,
                 top = mul4x44(mat, vec4(0.0f, 1.0f, 0.0f, 1.0f)).xyz,
              center = div3f(add3(bottom, top), 2.0f),
@@ -831,12 +831,14 @@ INLINE bool ray_hit_cylinder(Ray ray, Mat4 mat) {
         { .origin = center, .vector = top_norm },
     };
 
-    bool hit = false;
     for (int i = 0; i < LEN(planes); i++) {
         Vec3     p = ray_hit_plane(ray, planes[i]),
              local = mul4x44(inv, (Vec4) { .xyz = p, .w = 1.0f }).xyz;
         f32 dist = mag2(vec2(local.x, local.z));
-        hit = hit || (local.y > 0.0 && local.y < 1.0 && dist < 1.0);
+        if (local.y > 0.0 && local.y < 1.0 && dist < 1.0) {
+            *hit = p;
+            return;
+        }
     }
-    return hit;
+    hit = NULL;
 }

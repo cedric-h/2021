@@ -184,7 +184,8 @@ void update_player(Player *plyr, Vec3 up) {
 }
 
 typedef enum {
-    EntProp_Grows,
+    EntProp_Active,
+    EntProp_Selectable,
     EntProp_COUNT,
 } EntProp;
 
@@ -198,7 +199,9 @@ typedef struct {
     Vec4 color;
 
     u64 props[(EntProp_COUNT + 63)/64];
-    f32 growth;
+
+    int parent, children[50];
+    int child_count;
 
     Mat4 mat;
 } Ent;
@@ -218,8 +221,10 @@ static struct {
     int ent_count;
 } state;
 
-void add_ent(Ent ent) {
-    state.ents[state.ent_count++] = ent;
+int add_ent(Ent ent) {
+    int slot = state.ent_count++;
+    state.ents[slot] = ent;
+    return slot;
 }
 
 Vec3 spawn_planet_with_tree() {
@@ -294,6 +299,7 @@ void spawn_tree(Vec3 pos) {
     };
     tree.mat = mul4x4(m, scale4x4(scale));
     add_ent(tree);
+    set_ent_prop(&tree, EntProp_Selectable);
 
     const f32 main_limbs[] = { 0.11f, 0.1f, 0.4f, 0.09f, 0.3f, };
     f32 a = 0.0f;
@@ -305,8 +311,10 @@ void spawn_tree(Vec3 pos) {
         Vec3 lscale = vec3(scale.x * (0.5f + af),
                            scale.y * af + 0.2f,
                            scale.z * (0.5f + af));
-        tree.mat = mul4x4(l, scale4x4(lscale));
-        add_ent(tree);
+        int limb = add_ent(tree);
+        state.ents[limb].mat = mul4x4(l, scale4x4(lscale));
+        state.ents[limb].parent = limb;
+        tree.parent = limb;
         const f32 boffset = 0.095f;
         for (f32 branch = boffset; branch < lscale.y; branch += 0.08f) {
             Mat4 b = mul4x4(l, translate4x4(mul3f(vec3_y(), branch)));
@@ -318,13 +326,15 @@ void spawn_tree(Vec3 pos) {
 
             Mat4 lb = mul4x4(b, axis_angle4x4(vec3_z(),  PI32 * twist));
             lb = mul4x4(lb, rot);
-            tree.mat = mul4x4(lb, scale4x4(bscale));
-            add_ent(tree);
+            int branch_l = add_ent(tree);
+            state.ents[branch_l].mat = mul4x4(lb, scale4x4(bscale));
+            state.ents[limb].children[state.ents[limb].child_count++] = branch_l;
 
             Mat4 rb = mul4x4(b, axis_angle4x4(vec3_z(), -PI32 * twist));
             rb = mul4x4(rb, rot);
-            tree.mat = mul4x4(rb, scale4x4(bscale));
-            add_ent(tree);
+            int branch_r = add_ent(tree);
+            state.ents[branch_r].mat = mul4x4(rb, scale4x4(bscale));
+            state.ents[limb].children[state.ents[limb].child_count++] = branch_r;
 
             const f32 leoffset = 0.03f;
             for (f32 dir = -1.0; dir <= 1.0; dir += 2.0)
@@ -339,17 +349,18 @@ void spawn_tree(Vec3 pos) {
                 rot = mul4x4(rot, axis_angle4x4(vec3_z(), PI32 * dist * 0.1f));
                 Mat4 leafter = mul4x4(mul4x4(rot, center_leaf), scale4x4(lescale));
 
-                tree.color = color;
-                Mat4 lle = mul4x4(lb, pos);
-                tree.mat = mul4x4(lle, leafter);
-                add_ent(tree);
+                int leaf_l = add_ent(tree);
+                state.ents[leaf_l].color = color;
+                state.ents[leaf_l].mat = mul4x4(mul4x4(lb, pos), leafter);
+                state.ents[limb].children[state.ents[limb].child_count++] = leaf_l;
 
-                Mat4 rle = mul4x4(rb, pos);
-                tree.mat = mul4x4(rle, leafter);
-                add_ent(tree);
+                int leaf_r = add_ent(tree);
+                state.ents[leaf_r].color = color;
+                state.ents[leaf_r].mat = mul4x4(mul4x4(rb, pos), leafter);
+                state.ents[limb].children[state.ents[limb].child_count++] = leaf_r;
             }
-            tree.color = color;
         }
+        printf("children: %d\n", state.ents[limb].child_count);
     }
 }
 
@@ -415,6 +426,34 @@ void frame(void) {
 
     update_player(&state.player, up);
     
+    int selected[50], *selected_writer = selected;
+    Ray cam = (Ray) { .origin = player_eye(&state.player), 
+                      .vector = cam_mat3(&state.player.camera).z };
+    f32 hit_dist = 1.0;
+    int hit_ent = -1;
+    for (int i = 0; i < state.ent_count; i++) {
+        Ent *ent = &state.ents[i];
+
+        if (!has_ent_prop(ent, EntProp_Selectable))
+            continue;
+
+        Vec3 new_hit_storage;
+        Vec3 *new_hit = &new_hit_storage;
+        ray_hit_cylinder(cam, ent->mat, new_hit);
+        if (new_hit) {
+            f32 new_dist = magmag3(sub3(cam.origin, *new_hit));
+            if (new_dist < hit_dist) {
+                hit_dist = new_dist;
+                hit_ent = ent->parent;
+            }
+        }
+    }
+    if (hit_ent > -1) {
+        *selected_writer++ = hit_ent;
+        for (int i = 0; i < state.ents[hit_ent].child_count; i++)
+            *selected_writer++ = state.ents[hit_ent].children[i];
+    }
+
     start_render(player_view(&state.player));
     for (int i = 0; i < state.ent_count; i++) {
         Ent *ent = &state.ents[i];
@@ -423,14 +462,13 @@ void frame(void) {
                 draw(ent->mat, ASSET_ICOSAHEDRON, ent->color);
                 break;
             case Art_Cylinder:;
+                for (int si = 0; si < (selected_writer - selected); si++)
+                    if (selected[si] == i) {
+                        draw_ghost(ent->mat, ASSET_CYLINDER, ent->color);
+                        break;
+                    }
 
-                Ray cam = (Ray) { .origin = player_eye(&state.player), 
-                                  .vector = cam_mat3(&state.player.camera).z };
-
-                if (ray_hit_cylinder(cam, ent->mat))
-                    draw_ghost(ent->mat, ASSET_CYLINDER, ent->color);
-                else
-                    draw(ent->mat, ASSET_CYLINDER, ent->color);
+                draw(ent->mat, ASSET_CYLINDER, ent->color);
                 break;
             default:
                 panic("unknown art");
