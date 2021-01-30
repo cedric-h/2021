@@ -36,7 +36,7 @@ static struct {
     sg_pipeline pip;
     sg_pipeline ghost_pip;
 
-    Draw ghosts[20];
+    Draw ghosts[200];
     int ghost_count;
 
     sg_bindings bind;

@@ -131,6 +131,7 @@ INLINE Vec2 perp2(Vec2 a) {
 
 
 typedef union {
+    struct { Vec2 xy; f32 _z; };
     struct { f32 x, y, z; };
     f32 nums[3];
 } Vec3;
@@ -261,6 +262,33 @@ INLINE Vec3 project_plane_vec3(Vec3 n, Vec3 bd) {
     return sub3(bd, mul3f(n, dot3(bd, n)));
 }
 
+typedef struct {
+    Vec3 origin, vector;
+} Ray;
+
+INLINE Vec3 ray_hit_plane(Ray ray, Ray plane) {
+    f32 d = dot3(sub3(plane.origin, ray.origin), plane.vector)
+               / dot3(ray.vector, plane.vector);
+    return add3(ray.origin, mul3f(ray.vector, d));
+}
+
+INLINE bool ray_in_plane_circle(Ray ray, Ray plane, f32 radius2) {
+    Vec3 hit = ray_hit_plane(ray, plane);
+    return magmag3(sub3(plane.origin, hit)) < radius2;
+}
+
+INLINE bool ray_in_plane_rect(Ray ray, Ray plane, Vec3 tl, Vec3 br) {
+    f32 minx = fminf(tl.x, br.x),
+        miny = fminf(tl.y, br.y),
+        minz = fminf(tl.z, br.z),
+        maxx = fmaxf(tl.x, br.x),
+        maxy = fmaxf(tl.y, br.y),
+        maxz = fmaxf(tl.z, br.z);
+    Vec3 hit = ray_hit_plane(ray, plane);
+    return (minx < hit.x && maxx > hit.x) &&
+           (miny < hit.y && maxy > hit.y) &&
+           (minz < hit.z && maxz > hit.z);
+}
 static Vec3 icosa_verts[12];
 const u16 icosa_indices[][3] = {
      { 0, 11,  5}, { 0,  5,  1}, { 0,  1,  7},
@@ -786,4 +814,31 @@ INLINE Mat4 perspective4x4(f32 fov, f32 aspect, f32 near, f32 far) {
     res.nums[3][2] = (2.0f * near * far) / (near - far);
     res.nums[3][3] = 0.0f;
     return res;
+}
+
+INLINE void ray_hit_cylinder(Ray ray, Mat4 mat, Vec3* hit) {
+    Vec3     bottom = mat.w.xyz,
+                top = mul4x44(mat, vec4(0.0f, 1.0f, 0.0f, 1.0f)).xyz,
+             center = div3f(add3(bottom, top), 2.0f),
+            b_side0 = mul4x44(mat, vec4(1.0f, 0.0f, 0.0f, 1.0f)).xyz,
+         side0_norm = norm3(sub3(bottom, b_side0)),
+           top_norm = norm3(sub3(bottom, top)),
+         side1_norm = cross3(side0_norm, top_norm);
+    Mat4 inv = invert4x4(mat);
+    Ray planes[] = {
+        { .origin = bottom, .vector = side0_norm },
+        { .origin = bottom, .vector = side1_norm },
+        { .origin = center, .vector = top_norm },
+    };
+
+    for (int i = 0; i < LEN(planes); i++) {
+        Vec3     p = ray_hit_plane(ray, planes[i]),
+             local = mul4x44(inv, (Vec4) { .xyz = p, .w = 1.0f }).xyz;
+        f32 dist = mag2(vec2(local.x, local.z));
+        if (local.y > 0.0 && local.y < 1.0 && dist < 1.0) {
+            *hit = p;
+            return;
+        }
+    }
+    hit = NULL;
 }
