@@ -251,7 +251,7 @@ void start_render(Mat4 view) {
     sg_apply_bindings(&renderer.bind);
 }
 
-void draw(Mat4 mat, Asset asset, Vec4 color) {
+void draw_asset(Mat4 mat, Asset asset, Vec4 color) {
     renderer.vs_params.model = mat;
     renderer.vs_params.inv_trans_model = transpose4x4(invert4x4(mat));
     renderer.vs_params.color = color;
@@ -263,7 +263,7 @@ void draw(Mat4 mat, Asset asset, Vec4 color) {
     sg_draw(asset.start, asset.end - asset.start, 1);
 }
 
-void draw_ghost(Mat4 mat, Asset asset, Vec4 color) {
+void draw_ghost_asset(Mat4 mat, Asset asset, Vec4 color) {
     renderer.ghosts[renderer.ghost_count++] = (Draw) {
         .mat = mat,
         .asset = asset,
@@ -276,7 +276,7 @@ void end_render() {
     sg_apply_bindings(&renderer.bind);
     Draw *d;
     for (int i = 0; d = &renderer.ghosts[i], i < renderer.ghost_count; i++)
-        draw(d->mat, d->asset, d->color);
+        draw_asset(d->mat, d->asset, d->color);
 
     sg_end_pass();
     sg_commit();
