@@ -35,6 +35,10 @@ INLINE f32 to_radians(f32 degrees) {
     return degrees * (PI32 / 180.0f);
 }
 
+INLINE f32 ease_in_expo(f32 t) {
+    return t <= 0.0f ? 0.0f : powf(2.0f, 10.0 * t - 10.0f);
+}
+
 typedef union {
     struct { f32 x, y; };
     struct { f32 u, v; };
@@ -527,7 +531,28 @@ INLINE Mat3 ortho_bases3x3(Vec3 v) {
     Vec3     n = norm3(v),
            tan = ortho3(n),
          bitan = cross3(n, tan);
-    return (Mat3) { .cols = { n, tan, bitan } };
+    return (Mat3) { .cols = { bitan, n, tan } };
+}
+
+INLINE Mat3 transpose3x3(Mat3 a) {
+    Mat3 res;
+    for(int c = 0; c < 3; ++c)
+        for(int r = 0; r < 3; ++r)
+            res.nums[r][c] = a.nums[c][r];
+    return res;
+}
+
+INLINE Mat3 invert3x3(Mat3 a) {
+    Vec3 tmp0 = cross3(a.y, a.z),
+         tmp1 = cross3(a.z, a.x),
+         tmp2 = cross3(a.x, a.y);
+    f32     det = dot3(a.z, tmp2),
+        inv_det = 1.0f / det;
+    return transpose3x3((Mat3) {
+        .x = mul3f(tmp0, inv_det),
+        .y = mul3f(tmp1, inv_det),
+        .z = mul3f(tmp2, inv_det),
+    });
 }
 
 typedef union {
@@ -586,19 +611,19 @@ INLINE Mat4 mat3_translation4x4(Mat3 basis_vectors, Vec3 pos) {
 
 INLINE Mat4 mat34x4(Mat3 bases) {
     Mat4 res;
-    res.nums[0][0] = bases.nums[2][0];
-    res.nums[0][1] = bases.nums[2][1];
-    res.nums[0][2] = bases.nums[2][2];
+    res.nums[0][0] = bases.nums[0][0];
+    res.nums[0][1] = bases.nums[0][1];
+    res.nums[0][2] = bases.nums[0][2];
     res.nums[0][3] = 0.0;
 
-    res.nums[1][0] = bases.nums[0][0];
-    res.nums[1][1] = bases.nums[0][1];
-    res.nums[1][2] = bases.nums[0][2];
+    res.nums[1][0] = bases.nums[1][0];
+    res.nums[1][1] = bases.nums[1][1];
+    res.nums[1][2] = bases.nums[1][2];
     res.nums[1][3] = 0.0;
 
-    res.nums[2][0] = bases.nums[1][0];
-    res.nums[2][1] = bases.nums[1][1];
-    res.nums[2][2] = bases.nums[1][2];
+    res.nums[2][0] = bases.nums[2][0];
+    res.nums[2][1] = bases.nums[2][1];
+    res.nums[2][2] = bases.nums[2][2];
     res.nums[2][3] = 0.0;
 
     res.nums[3][0] = 0.0;
@@ -816,6 +841,16 @@ INLINE Mat4 perspective4x4(f32 fov, f32 aspect, f32 near, f32 far) {
     return res;
 }
 
+/* This is super inefficient and innaccurate,
+    it could be made much more efficient by multiplying the ray into
+    local space instead of bringing key points into world space,
+    and by using line-point distance for checks against body of the cylinder.
+    this works well enough for selecting parts of the tree, though,
+    so for now it stays.
+
+    The test against the center disc of the cylinder could be done
+    instead for the top and bottom discs for a higher fidelity check.
+*/
 INLINE void ray_hit_cylinder(Ray ray, Mat4 mat, Vec3* hit) {
     Vec3     bottom = mat.w.xyz,
                 top = mul4x44(mat, vec4(0.0f, 1.0f, 0.0f, 1.0f)).xyz,
