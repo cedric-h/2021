@@ -13,8 +13,12 @@ typedef double   f64;
 #define TAU32 6.28318530718f
 #define INLINE static inline
 
-INLINE float randf() {
-    return (float) rand() / (float) RAND_MAX;
+INLINE f32 signum(f32 x) {
+    return (x > 0) - (x < 0);
+}
+
+INLINE f32 randf() {
+    return (f32) rand() / (f32) RAND_MAX;
 }
 
 INLINE f32 wrap(f32 a, f32 b) {
@@ -338,7 +342,7 @@ typedef union {
             struct { f32 x, y, z; };
         };
 
-        float w;
+        f32 w;
     };
 
     f32 nums[4];
@@ -437,10 +441,11 @@ INLINE Vec4 norm4(Vec4 a) {
     return div4f(a, mag4(a));
 }
 
-INLINE bool eq4(Vec3 a, Vec3 b) {
+INLINE bool eq4(Vec4 a, Vec4 b) {
     return a.x == b.x &&
            a.y == b.y &&
-           a.z == b.z;
+           a.z == b.z &&
+           a.w == b.w;
 }
 
 typedef union {
@@ -450,7 +455,7 @@ typedef union {
             struct { f32 x, y, z; };
         };
 
-        float w;
+        f32 w;
     };
 
     Vec4 xyzw;
@@ -467,6 +472,10 @@ INLINE Quat vec4Q(Vec4 v) {
 
 INLINE Vec4 quat4(Quat q) {
     return vec4(q.x, q.y, q.z, q.w);
+}
+
+INLINE Quat identQ() {
+    return quat(0.0, 0.0, 0.0, 1.0);
 }
 
 INLINE Quat printQ(Quat q) {
@@ -488,6 +497,23 @@ INLINE Vec3 mulQ3(Quat q, Vec3 v) {
     return add3(add3(v, mul3f(t, q.w)), cross3(q.xyz, t));
 }
 
+Quat slerpQ(Quat l, f32 time, Quat r) {
+    if (eq4(l.xyzw, r.xyzw))
+        return l;
+
+    f32 cos_theta = dot4(l.xyzw, r.xyzw),
+        angle = acosf(cos_theta);
+
+    f32 s1 = sinf((1.0f - time) * angle),
+        s2 = sinf(time * angle),
+        is = 1.0f / sinf(angle);
+
+    Vec4 ql = mul4f(l.xyzw, s1),
+         qr = mul4f(r.xyzw, s2);
+
+    return vec4Q(mul4f(add4(ql, qr), is));
+}
+
 INLINE Quat axis_angleQ(Vec3 axis, f32 angle) {
     Vec3 axis_norm = norm3(axis);
     f32 rot_sin = sinf(angle / 2.0f);
@@ -496,6 +522,24 @@ INLINE Quat axis_angleQ(Vec3 axis, f32 angle) {
     res.xyz = mul3f(axis_norm, rot_sin);
     res.w = cosf(angle / 2.0f);
     return res;
+}
+
+INLINE Quat yprQ(f32 yaw, f32 pitch, f32 roll) {
+    f32 y0 = sinf(yaw   * 0.5), w0 = cosf(yaw   * 0.5),
+        x1 = sinf(pitch * 0.5), w1 = cosf(pitch * 0.5),
+        z2 = sinf(roll  * 0.5), w2 = cosf(roll  * 0.5);
+
+    f32 x3 = w0 * x1,
+        y3 = y0 * w1,
+        z3 = -y0 * x1,
+        w3 = w0 * w1;
+
+    f32 x4 = x3 * w2 + y3 * z2,
+        y4 = -x3 * z2 + y3 * w2,
+        z4 = w3 * z2 + z3 * w2,
+        w4 = w3 * w2 - z3 * z2;
+
+    return quat(x4, y4, z4, w4);
 }
 
 typedef union {
@@ -558,7 +602,7 @@ INLINE Mat3 invert3x3(Mat3 a) {
 typedef union {
     struct { Vec4 x, y, z, w; };
     Vec4 cols[4];
-    float nums[4][4];
+    f32 nums[4][4];
 } Mat4;
 
 INLINE Mat4 mul4x4(Mat4 a, Mat4 b) {
@@ -576,7 +620,7 @@ INLINE Mat4 mul4x4(Mat4 a, Mat4 b) {
 INLINE Vec4 mul4x44(Mat4 m, Vec4 v) {
     Vec4 res;
     for(int x = 0; x < 4; ++x) {
-        float sum = 0;
+        f32 sum = 0;
         for(int y = 0; y < 4; ++y)
             sum += m.nums[y][x] * v.nums[y];
 
@@ -650,6 +694,14 @@ INLINE Mat4 diag4x4(f32 f) {
     res.nums[2][2] = f;
     res.nums[3][3] = f;
     return res;
+}
+
+INLINE Vec3 mat4_scale3(Mat4 mat) {
+    return vec3(
+        ((mat.x.x < 0.0f) ? -1.0f : 1.0f) * mag3(vec3(mat.nums[0][0], mat.nums[1][0], mat.nums[2][0])),
+        ((mat.y.y < 0.0f) ? -1.0f : 1.0f) * mag3(vec3(mat.nums[0][1], mat.nums[1][1], mat.nums[2][1])),
+        ((mat.x.x < 0.0f) ? -1.0f : 1.0f) * mag3(vec3(mat.nums[0][2], mat.nums[1][2], mat.nums[2][2]))
+    );
 }
 
 INLINE Mat4 scale4x4(Vec3 scale) {
@@ -851,7 +903,7 @@ INLINE Mat4 perspective4x4(f32 fov, f32 aspect, f32 near, f32 far) {
     The test against the center disc of the cylinder could be done
     instead for the top and bottom discs for a higher fidelity check.
 */
-INLINE void ray_hit_cylinder(Ray ray, Mat4 mat, Vec3* hit) {
+INLINE bool ray_hit_cylinder(Ray ray, Mat4 mat, Vec3* hit, f32 scale) {
     Vec3     bottom = mat.w.xyz,
                 top = mul4x44(mat, vec4(0.0f, 1.0f, 0.0f, 1.0f)).xyz,
              center = div3f(add3(bottom, top), 2.0f),
@@ -870,10 +922,10 @@ INLINE void ray_hit_cylinder(Ray ray, Mat4 mat, Vec3* hit) {
         Vec3     p = ray_hit_plane(ray, planes[i]),
              local = mul4x44(inv, (Vec4) { .xyz = p, .w = 1.0f }).xyz;
         f32 dist = mag2(vec2(local.x, local.z));
-        if (local.y > 0.0 && local.y < 1.0 && dist < 1.0) {
+        if (local.y > 0.0 && local.y < 1.0 && dist < scale) {
             *hit = p;
-            return;
+            return true;
         }
     }
-    hit = NULL;
+    return false;
 }
