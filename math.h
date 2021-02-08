@@ -696,6 +696,10 @@ INLINE Mat4 diag4x4(f32 f) {
     return res;
 }
 
+INLINE Mat4 ident4x4() {
+    return diag4x4(1.0);
+}
+
 INLINE Vec3 mat4_scale3(Mat4 mat) {
     return vec3(
         ((mat.x.x < 0.0f) ? -1.0f : 1.0f) * mag3(vec3(mat.nums[0][0], mat.nums[1][0], mat.nums[2][0])),
@@ -705,7 +709,7 @@ INLINE Vec3 mat4_scale3(Mat4 mat) {
 }
 
 INLINE Mat4 scale4x4(Vec3 scale) {
-    Mat4 res = diag4x4(1.0);
+    Mat4 res = ident4x4();
     res.nums[0][0] = scale.x;
     res.nums[1][1] = scale.y;
     res.nums[2][2] = scale.z;
