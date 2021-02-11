@@ -128,6 +128,24 @@ void print_dbg_tag(DebugTag dbg_tag) {
     }
 }
 
+typedef enum {
+    Resource_StickLong,
+    Resource_StickShort,
+    Resource_Leaf,
+} Resource;
+
+typedef enum {
+    /* take "orphaned" to mean (ent->parent == NULL) */
+    /* take "isolated" to mean (ent->parent == NULL && ent->first_child == NULL) */
+    PickUpState_None,         /* no pickup scheduled or in progress */
+    PickUpState_WhenIsolated, /* proceed to Ongoing if orphaned */
+    PickUpState_WhenOrphaned, /* proceed to Ongoing if isolated */
+    PickUpState_Next,         /* proceed to Ongoing unconditionally */
+    PickUpState_Ongoing,      /* state when pick up is in progress; do not set directly.
+                                 when animation is complete, proceed to PickupState_Done.*/
+    PickUpState_Done,         /* ent is parented to the player. removed once processed. */
+} PickUpState;
+
 #define MAX_ENT_CHILDREN 50
 typedef struct Ent Ent;
 struct Ent {
@@ -135,18 +153,20 @@ struct Ent {
     u64 props[(EntProp_COUNT + 63)/64];
     DebugTag dbg_tag;
 
+    /* building, crafting, & hotbar grouping */
+    Resource resource;
+
     /* shake animation */
     f64 shake_timer;
     Mat4 before_shake;
 
-    /* take "orphaned" to mean no parents or children */
-    bool orphan_pick_up; /* automatically parents ent to player if orphaned */
-    bool pick_up; /* unconditionally parents ent to player */
+    /* player item pick up */
+    PickUpState pick_up_state;
     Vec3 pick_up_start_pos;
+    u64 pick_up_start_time;
 
     /* used to detach children from parents */
     PruneTag prune_tag;
-    u64 detach_time;
 
     /* appearance */
     Art art;
@@ -155,8 +175,8 @@ struct Ent {
     /* positioning */
     Ent *parent, *first_child, *last_child, *next, *prev;
     Mat4 mat;
-    /* If true, children of this ent are not positioned relative to it */
-    bool independent_children;
+    bool independent_children; /* If true, children of this ent are
+                                  not positioned relative to it */
     Vec3 scale;
 
     /* physics & gravity: EntProp_Phys */
@@ -215,13 +235,7 @@ INLINE void add_ent_child(Ent *parent, Ent *child) {
     parent->last_child = child;
 }
 
-/* Similar to ent_tree_iter, but not recursive. */
-INLINE Ent *ent_child_iter(Ent *node) {
-    if (node == NULL) return NULL;
-    return node->next;
-}
-
-/* Used to iterate through an ent's children, recursively */
+/* Used to iterate through an entity's parent-child tree */
 INLINE Ent *ent_tree_iter(Ent *node) {
     if (node == NULL) return NULL;
     if (node->first_child) return node->first_child;
@@ -233,14 +247,23 @@ INLINE Ent *ent_tree_iter(Ent *node) {
     return NULL;
 }
 
+/* Similar to ent_tree_iter, but does not crawl up past the second argument.
+   This can be useful for iterating only through a node's children,
+   and not through its parents or cousins.*/
+INLINE Ent *ent_tree_capped_iter(Ent *node, Ent *cap) {
+    if (node == NULL) return NULL;
+    if (node->first_child) return node->first_child;
+
+    while (node && node->next == NULL)
+        node = node->parent;
+    
+    if (node && node != cap) return node->next;
+    return NULL;
+}
+
 /* NOTE: positioning assumes child is actually a child of parent */
 INLINE void detach_child(Ent *child) {
-    for (Ent *c; c = child->first_child;)
-        detach_child(c);
-
-    child->detach_time = stm_now();
     child->mat = get_ent_unscaled_mat(child);
-    child->pick_up_start_pos = child->mat.w.xyz;
     Ent *parent = child->parent;
     if (parent) {
         if (parent->last_child == child) parent->last_child = child->prev;
@@ -255,6 +278,13 @@ INLINE void detach_child(Ent *child) {
 
     if (child->mass > 0.0)
         give_ent_prop(child, EntProp_Phys);
+}
+
+INLINE void detach_child_recursive(Ent *child) {
+    for (Ent *c = child->first_child; c; c = c->next)
+        detach_child_recursive(c);
+    
+    detach_child(child);
 }
 
 
@@ -485,25 +515,27 @@ void spawn_tree(Vec3 pos) {
     tree.color = color;
     tree.mat = m;
     tree.scale = scale;
-    add_ent(tree);
-    tree.orphan_pick_up = true;
+    Ent *trunk = add_ent(tree);
+    trunk->pick_up_state = PickUpState_WhenIsolated;
 
     const f32 main_limbs[] = { 0.11f, 0.1f, 0.4f, 0.09f, 0.3f, };
     f32 a = 0.0f;
     for (int i = 0; i < LEN(main_limbs); a += main_limbs[i], i++) {
         f32 af = main_limbs[i];
-        Mat4 l = mul4x4(m, translate4x4(mul3(vec3_y(), scale)));
+        Mat4 l = translate4x4(mul3(vec3_y(), scale));
         l = mul4x4(l, axis_angle4x4(vec3_y(), a * PI32 * 2.0f));
         l = mul4x4(l, axis_angle4x4(vec3_x(), 1.2f - af * 1.6f));
         Vec3 lscale = vec3(scale.x * (0.5f + af),
                            scale.y * af + 0.2f,
                            scale.z * (0.5f + af));
         Ent *limb = add_ent(tree);
+        limb->pick_up_state = PickUpState_WhenOrphaned;
         limb->dbg_tag = DebugTag_Limb;
         limb->mat = l;
         limb->scale = lscale;
         give_ent_prop(limb, EntProp_Selectable);
         give_ent_prop(limb, EntProp_Whackable);
+        add_ent_child(trunk, limb);
 
         const f32 boffset = 0.095f;
         for (f32 branch = boffset; branch < lscale.y; branch += 0.08f) {
@@ -515,6 +547,7 @@ void spawn_tree(Vec3 pos) {
             f32 twist = 0.3f;
 
             Ent branch_e = tree;
+            branch_e.pick_up_state = PickUpState_WhenOrphaned;
             branch_e.scale = bscale;
             branch_e.parent = limb;
             branch_e.prune_tag = PruneTag_Branch;
@@ -545,7 +578,7 @@ void spawn_tree(Vec3 pos) {
                 Ent leaf_ent = tree;
                 leaf_ent.scale = lescale;
                 leaf_ent.dbg_tag = DebugTag_Leaf;
-                leaf_ent.orphan_pick_up = false;
+                leaf_ent.pick_up_state = PickUpState_None;
                 leaf_ent.prune_tag = PruneTag_Leaf;
                 leaf_ent.mass = 0.6 + 0.4 * randf();
                 leaf_ent.mat = mul4x4(pos, leafter);
@@ -637,7 +670,7 @@ void event(const sapp_event *ev) {
     }
 }
 
-/* finds a limb that's under the mouse, gives it EntProp_Selected */
+/* finds a limb that's under the mouse */
 Ent *select_limb(EntProp filter, f32 scale) {
     Ray cam = (Ray) { .origin = player_eye(&world.player), 
                       .vector = cam_mat3(&world.player.camera).z };
@@ -664,10 +697,10 @@ void prune_limb(Ent *limb, PruneTag tag, f32 percent) {
     for (Ent *child = limb; child;)
         if (child->prune_tag == tag && randf() < percent) {
             Ent *cached_next = child->next ? child->next : child->parent;
-            detach_child(child);
+            detach_child_recursive(child);
             child = cached_next;
         } else
-            child = ent_tree_iter(child);
+            child = ent_tree_capped_iter(child, limb);
 }
 
 void grab_limbs(Player *plyr) {
@@ -682,7 +715,7 @@ void grab_limbs(Player *plyr) {
         if (limb) {
             give_ent_prop(limb, EntProp_Selected);
 
-            for (Ent *c = limb; c; c = ent_tree_iter(c))
+            for (Ent *c = limb; c; c = ent_tree_capped_iter(c, limb))
                 give_ent_prop(c, EntProp_Selected);
 
             if (input.left_mb_down && plyr->grabbed != limb) {
@@ -704,13 +737,11 @@ void grab_limbs(Player *plyr) {
                 plyr->last_grab_finish = stm_now();
 
                 /* detach what's grabbed */
-                grab->pick_up = true;
-                grab->detach_time = stm_now();
-                grab->pick_up_start_pos = grab->mat.w.xyz;
+                detach_child(grab);
                 plyr->grabbed = NULL;
             } else {
                 give_ent_prop(grab, EntProp_Selected);
-                for (Ent *c = grab; c; c = ent_tree_iter(c))
+                for (Ent *c = grab; c; c = ent_tree_capped_iter(c, grab))
                     give_ent_prop(c, EntProp_Selected);
                 grab->shake_timer += world.dt * 2.0;
             }
@@ -764,12 +795,11 @@ void control_player_equipped(Player *plyr, Vec3 player_up) {
         Ent *hit = select_limb(EntProp_Whackable, 5.5);
         if (hit) {
             int child_count = 0;
-            for (Ent *c = hit; c; c = ent_tree_iter(c))
+            for (Ent *c = hit; c; c = ent_tree_capped_iter(c, hit))
                 child_count++;
 
             if (child_count < 10) {
-                detach_child(hit);
-                hit->orphan_pick_up = true;
+                detach_child_recursive(hit);
             } else {
                 prune_limb(plyr->equipped,   PruneTag_Leaf, 0.5);
                 prune_limb(           hit,   PruneTag_Leaf, 0.5);
@@ -787,25 +817,35 @@ void control_player_equipped(Player *plyr, Vec3 player_up) {
 
 void animate_pick_up(Player *plyr, Vec3 up) {
     for (Ent *ent = 0; ent_world_iter(&ent);) {
-        bool orphan = ent->parent == NULL && ent->first_child == NULL;
-        bool adopt = orphan && ent->orphan_pick_up;
-        if (ent->pick_up || adopt) {
-            f64 detach_d = stm_sec(stm_since(ent->detach_time));
-            f32 t = detach_d / 0.7;
-            Vec3 start = ent->pick_up_start_pos,
-                  neck = sub3(player_eye(plyr), mul3f(up, 0.6f));
-            ent->mat.w.xyz = lerp3(start, ease_in_expo(t), neck);
-            if (t >= 1.0f) {
-                ent->pick_up = false;
-                ent->orphan_pick_up = false;
-                add_ent_child(plyr->ent, ent);
-                if (plyr->equipped == NULL) {
-                    plyr->equipped = ent;
-                    plyr->equip_start = stm_now();
-                } else {
-                    give_ent_prop(ent, EntProp_Hidden);
+        switch (ent->pick_up_state) {
+            case (PickUpState_None):;
+                break;
+            case (PickUpState_WhenIsolated):;
+                if (ent->parent || ent->first_child) break;
+            case (PickUpState_WhenOrphaned):;
+                if (ent->parent) break;
+            case (PickUpState_Next):;
+                ent->pick_up_start_pos = ent->mat.w.xyz;
+                ent->pick_up_start_time = stm_now();
+                ent->pick_up_state = PickUpState_Ongoing;
+                break;
+            case (PickUpState_Ongoing):;
+                f64 pick_up_d = stm_sec(stm_since(ent->pick_up_start_time));
+                f32 t = pick_up_d / 0.7;
+                Vec3 start = ent->pick_up_start_pos,
+                      neck = sub3(player_eye(plyr), mul3f(up, 0.6f));
+                ent->mat.w.xyz = lerp3(start, ease_in_expo(t), neck);
+
+                if (t >= 1.0f) {
+                    ent->pick_up_state = PickUpState_Done;
+                    add_ent_child(plyr->ent, ent);
                 }
-            }
+                break;
+            case (PickUpState_Done):;
+                break;
+            default:
+                panic("invalid PickUpState variant");
+                break;
         }
     }
 }
@@ -894,6 +934,23 @@ void gravity_physics(void) {
         }
 }
 
+void inventory_logistics(Player *plyr) {
+    for (Ent *itm = plyr->ent->first_child; itm; itm = itm->next)
+        if (itm->pick_up_state == PickUpState_Done) {
+            puts("once?");
+            itm->pick_up_state = PickUpState_None;
+            for (Ent *c = itm; c; c = ent_tree_capped_iter(c, itm))
+                give_ent_prop(c, EntProp_Hidden);
+        }
+    if (plyr->equipped == NULL && plyr->ent->first_child) {
+        plyr->equipped = plyr->ent->first_child;
+        print_dbg_tag(plyr->equipped->dbg_tag);
+        plyr->equip_start = stm_now();
+        for (Ent *c = plyr->equipped; c; c = ent_tree_capped_iter(c, plyr->equipped))
+            take_ent_prop(c, EntProp_Hidden);
+    }
+}
+
 void frame(void) {
     Vec3 player_up = norm3(sub3(world.player.ent->mat.w.xyz, planet));
 
@@ -901,6 +958,7 @@ void frame(void) {
     control_player_movement(&world.player, player_up);
     if (player_equipped(&world.player))
         control_player_equipped(&world.player, player_up);
+    inventory_logistics(&world.player);
 
     gravity_physics();
 
