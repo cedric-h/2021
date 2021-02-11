@@ -17,8 +17,39 @@ INLINE f32 signum(f32 x) {
     return (x > 0) - (x < 0);
 }
 
+INLINE u32 rotl(const u32 x, int k) {
+    return (f32) ((x << k) | (x >> (32 - k)));
+}
+
+static u32 s[4];
+
+/* source: http://prng.di.unimi.it/xoshiro128plus.c
+   NOTE: The state must be seeded so that it is not everywhere zero. */
+u32 rand_u32(void) {
+    const u32 result = s[0] + s[3],
+              t = s[1] << 9;
+
+    s[2] ^= s[0];
+    s[3] ^= s[1];
+    s[1] ^= s[2];
+    s[0] ^= s[3];
+
+    s[2] ^= t;
+
+    s[3] = rotl(s[3], 11);
+
+    return result;
+}
+
+INLINE void srandf(u32 s0, u32 s1, u32 s2, u32 s3) {
+    s[0] = s0;
+    s[1] = s1;
+    s[2] = s2;
+    s[3] = s3;
+}
+
 INLINE f32 randf() {
-    return (f32) rand() / (f32) RAND_MAX;
+    return (rand_u32() >> 8) * 0x1.0p-24;
 }
 
 INLINE f32 wrap(f32 a, f32 b) {
