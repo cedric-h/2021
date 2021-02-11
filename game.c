@@ -70,11 +70,11 @@ static struct {
 
 typedef enum {
     EntProp_Active,
-    EntProp_Parent,
-    EntProp_Child,
+    EntProp_Hidden,
+    EntProp_Phys,
+    EntProp_Whackable,
     EntProp_Selectable,
     EntProp_Selected,
-    EntProp_Grabbed,
     EntProp_COUNT,
 } EntProp;
 
@@ -83,21 +83,94 @@ typedef enum {
     Art_Cylinder,
 } Art;
 
-typedef int EntId;
-typedef struct {
+typedef enum {
+    PruneTag_Default,
+    PruneTag_Branch,
+    PruneTag_Leaf,
+} PruneTag;
+
+typedef enum {
+    DebugTag_Player,
+    DebugTag_Branch,
+    DebugTag_Leaf,
+    DebugTag_Limb,
+    DebugTag_Trunk,
+    DebugTag_Dirt,
+    DebugTag_Stone,
+} DebugTag;
+
+void print_dbg_tag(DebugTag dbg_tag) {
+    switch (dbg_tag) {
+        case DebugTag_Player:;
+              printf("Player");
+              break;
+        case DebugTag_Branch:;
+              printf("Branch");
+              break;
+        case DebugTag_Leaf:;
+              printf("Leaf");
+              break;
+        case DebugTag_Limb:;
+              printf("Limb");
+              break;
+        case DebugTag_Trunk:;
+              printf("Trunk");
+              break;
+        case DebugTag_Dirt:;
+              printf("Dirt");
+              break;
+        case DebugTag_Stone:;
+              printf("Stone");
+              break;
+        default:;
+            panic("unknown DebugTag");
+            break;
+    }
+}
+
+#define MAX_ENT_CHILDREN 50
+typedef struct Ent Ent;
+struct Ent {
+    /* specifies which of the following field groups are valid */
+    u64 props[(EntProp_COUNT + 63)/64];
+    DebugTag dbg_tag;
+
+    /* shake animation */
+    f64 shake_timer;
+    Mat4 before_shake;
+
+    /* take "orphaned" to mean no parents or children */
+    bool orphan_pick_up; /* automatically parents ent to player if orphaned */
+    bool pick_up; /* unconditionally parents ent to player */
+    Vec3 pick_up_start_pos;
+
+    /* used to detach children from parents */
+    PruneTag prune_tag;
+    u64 detach_time;
+
+    /* appearance */
     Art art;
     Vec4 color;
 
-    u64 props[(EntProp_COUNT + 63)/64];
-
-    EntId parent, children[50];
-    u64 grab_stop, grab_start;
-    Mat4 before_grab;
-    int child_count;
-
+    /* positioning */
+    Ent *parent, *first_child, *last_child, *next, *prev;
     Mat4 mat;
-    Mat4 parent_mat;
-} Ent;
+    /* If true, children of this ent are not positioned relative to it */
+    bool independent_children;
+    Vec3 scale;
+
+    /* physics & gravity: EntProp_Phys */
+    Vec3 vel, acc;
+    f32 mass;
+};
+
+INLINE Ent default_ent(DebugTag dbg_tag) {
+    return (Ent) {
+        .dbg_tag = dbg_tag,
+        .art = Art_Icosahedron,
+        .color = vec4(1.0, 0.0, 1.0, 1.0),
+    };
+}
 
 INLINE bool has_ent_prop(Ent *ent, EntProp prop) {
     return !!(ent->props[prop/64] & ((u64)1 << (prop%64)));
@@ -120,6 +193,70 @@ INLINE bool give_ent_prop(Ent *ent, EntProp prop) {
     ent->props[prop/64] |= (u64)1 << (prop%64);
     return before;
 }
+
+INLINE Mat4 get_ent_unscaled_mat(Ent *ent) {
+    Mat4 m = ent->mat;
+    if (ent->parent && !ent->parent->independent_children)
+        m = mul4x4(get_ent_unscaled_mat(ent->parent), m);
+    return m;
+}
+
+INLINE Mat4 get_ent_mat(Ent *ent) {
+    return mul4x4(get_ent_unscaled_mat(ent), scale4x4(ent->scale));
+}
+
+INLINE void add_ent_child(Ent *parent, Ent *child) {
+    child->parent = parent;
+    child->prev = parent->last_child;
+    child->next = NULL;
+    if (parent->last_child) parent->last_child->next = child;
+    else parent->first_child = child;
+
+    parent->last_child = child;
+}
+
+/* Similar to ent_tree_iter, but not recursive. */
+INLINE Ent *ent_child_iter(Ent *node) {
+    if (node == NULL) return NULL;
+    return node->next;
+}
+
+/* Used to iterate through an ent's children, recursively */
+INLINE Ent *ent_tree_iter(Ent *node) {
+    if (node == NULL) return NULL;
+    if (node->first_child) return node->first_child;
+
+    while (node && node->next == NULL)
+        node = node->parent;
+    
+    if (node) return node->next;
+    return NULL;
+}
+
+/* NOTE: positioning assumes child is actually a child of parent */
+INLINE void detach_child(Ent *child) {
+    for (Ent *c; c = child->first_child;)
+        detach_child(c);
+
+    child->detach_time = stm_now();
+    child->mat = get_ent_unscaled_mat(child);
+    child->pick_up_start_pos = child->mat.w.xyz;
+    Ent *parent = child->parent;
+    if (parent) {
+        if (parent->last_child == child) parent->last_child = child->prev;
+        if (parent->first_child == child) parent->first_child = child->next;
+    }
+
+    if (child->prev) child->prev->next = child->next;
+    if (child->next) child->next->prev = child->prev;
+    child->next = NULL;
+    child->prev = NULL;
+    child->parent = NULL;
+
+    if (child->mass > 0.0)
+        give_ent_prop(child, EntProp_Phys);
+}
+
 
 
 
@@ -166,18 +303,33 @@ void turn_cam(Camera *cam, f32 yaw_delta_deg, f32 pitch_delta_deg) {
 
 /* --------- PLAYER */
 
+typedef enum {
+    SwingState_NoSwing,
+    SwingState_PreAct,
+    SwingState_ActNow,
+    SwingState_PostAct,
+} SwingState;
+
+#define EQUIP_LOAD_SECS 0.1f
 typedef struct {
-    Vec3 pos, vel, acc;
+    Ent *ent;
 
     Camera camera;
     f32 eye_height;
     Vec2 cam_vel;
 
-    EntId grabbed, equipped;
+    Ent *grabbed, *equipped;
+    u64 last_grab_finish;
     u64 equip_start;
-    bool equip_grabbed;
-    Vec3 equip_grab_start_pos;
+
+    u64 swing_start;
+    SwingState swing;
 } Player;
+
+bool player_equipped(Player *plyr) {
+    f32 elapsed = stm_sec(stm_since(plyr->equip_start));
+    return plyr->equipped && elapsed > EQUIP_LOAD_SECS;
+}
 
 /* Applies the camera's turning velocity to the camera.
     The camera's turning velocity is also gradually reduced,
@@ -192,7 +344,7 @@ void update_cam_vel(Camera *cam, Vec2 *cam_vel) {
     to be looking out from.
 */
 Vec3 player_eye(Player *plyr) {
-    return add3(plyr->pos,
+    return add3(plyr->ent->mat.w.xyz,
                 mul3f(plyr->camera.rotation.y, plyr->eye_height));
 }
 
@@ -201,11 +353,17 @@ Mat4 player_view(Player *plyr) {
     return mat3_translation4x4(cam_mat3(&plyr->camera), player_eye(plyr));
 }
 
-void move_player(Player *plyr) {
+void control_player_movement(Player *plyr, Vec3 up) {
+    /* reorient camera */
+    rotated_up_indefinite_basis(&plyr->camera.rotation, up);
+    update_cam_vel(&plyr->camera, &plyr->cam_vel);
+
+    Ent *p_ent = plyr->ent;
+
+    /* move position */
     Mat3 cam_dirs = cam_mat3(&plyr->camera),
              axes = plyr->camera.rotation;
     Vec3 move_dir = vec3f(0.0),
-             up     = axes.y,
              facing = project_plane_vec3(axes.y, cam_dirs.z),
              side   = project_plane_vec3(axes.y, cam_dirs.x);
     if (input.keys_down[(int) SAPP_KEYCODE_W])
@@ -217,36 +375,15 @@ void move_player(Player *plyr) {
     if (input.keys_down[(int) SAPP_KEYCODE_D])
         move_dir = add3(move_dir, side);
 
-    if (input.keys_pressed[(int) SAPP_KEYCODE_SPACE] && mag3(plyr->pos) < 1.001)
-        plyr->acc = add3(plyr->acc, mul3f(up, 0.028));
+    if (input.keys_pressed[(int) SAPP_KEYCODE_SPACE] && mag3(p_ent->mat.w.xyz) < 1.101)
+        p_ent->acc = add3(p_ent->acc, mul3f(up, 0.028));
 
     f32 len = mag3(move_dir);
     if (len > 0.0) {
         /* Normalizing move_dir prevents "two keys for twice the speed" */
         Vec3 norm = div3f(move_dir, len);
-        plyr->vel = add3(plyr->vel, mul3f(norm, 0.004f));
+        p_ent->vel = add3(p_ent->vel, mul3f(norm, 0.004f));
     }
-}
-
-void update_player(Player *plyr, Vec3 up) {
-    rotated_up_indefinite_basis(&plyr->camera.rotation, up);
-
-    update_cam_vel(&plyr->camera, &plyr->cam_vel);
-    move_player(plyr);
-
-    f32 dist = mag3(plyr->pos);
-    plyr->vel = add3(plyr->vel, mul3f(up, -0.00775 / dist));
-
-    if (dist < 1.0) {
-        f32 depth = 1.0 - dist;
-        plyr->pos = add3(plyr->pos, mul3f(up, depth));
-        plyr->vel = add3(plyr->vel, mul3f(up, depth * 0.01));
-    }
-
-    plyr->acc = mul3f(plyr->acc, 0.92f);
-    plyr->vel = add3(plyr->vel, plyr->acc);
-    plyr->vel = mul3f(plyr->vel, 0.87f);
-    plyr->pos = add3(plyr->pos, plyr->vel);
 }
 
 
@@ -256,28 +393,24 @@ void update_player(Player *plyr, Vec3 up) {
 
 static struct {
     Player player;
-    u64 start_time;
+    u64 start_time, last_render;
+    f64 dt;
+    f32 roll;
     Ent ents[2000];
     int ent_count;
 } world;
 
-INLINE int add_ent(Ent ent) {
-    int slot = world.ent_count++;
-    world.ents[slot] = ent;
+INLINE bool ent_world_iter(Ent **ent) {
+    if (*ent == NULL) *ent = world.ents;
+    else if (*ent - world.ents <= world.ent_count) (*ent)++;
+    else return false;
+    return true;
+}
+
+INLINE Ent *add_ent(Ent ent) {
+    Ent *slot = &world.ents[world.ent_count++];
+    *slot = ent;
     return slot;
-}
-
-/* TODO: add generational indices, check for dead index */
-INLINE Ent *get_ent(EntId id) {
-    if (id < 0) panic("invalid ent id");
-    return &world.ents[id];
-}
-
-INLINE Mat4 get_ent_mat(Ent* ent) {
-    Mat4 m = ent->mat;
-    if (has_ent_prop(ent, EntProp_Child))
-        m = mul4x4(get_ent(ent->parent)->parent_mat, m);
-    return m;
 }
 
 Vec3 spawn_planet_with_tree() {
@@ -306,17 +439,17 @@ Vec3 spawn_planet_with_tree() {
         };
 
         Mat4 m = translate4x4(mul3f(pos, out));
-        m = mul4x4(m, scale4x4(vec3f(scale)));
         m = mul4x4(m, axis_angle4x4(rand3(), randf() * PI32 * 2.0f));
 
-        Ent ent = (Ent) {
-            .mat = m,
-            .color = color,
-            .art = Art_Icosahedron,
-        };
+        Ent ent = default_ent(DebugTag_Stone);
+        ent.scale = vec3f(scale);
+        ent.mat = m;
+        ent.color = color;
+        ent.art = Art_Icosahedron;
         #define SUB_DIRTS 3
         #define DIRT_SCALE 0.13
         if (dirt) {
+            ent.dbg_tag = DebugTag_Dirt;
             Mat3 b = ortho_bases3x3(pos),
                  bases = (Mat3) { .cols = { b.y, b.z, b.x } };
             for (int x = 0; x < SUB_DIRTS; x++)
@@ -347,13 +480,13 @@ void spawn_tree(Vec3 pos) {
     Mat4 m = translate4x4(pos);
     m = mul4x4(m, mat34x4(bases));
 
-    Ent tree = (Ent) {
-        .art = Art_Cylinder,
-        .color = color
-    };
-    tree.mat = mul4x4(m, scale4x4(scale));
+    Ent tree = default_ent(DebugTag_Trunk);
+    tree.art = Art_Cylinder;
+    tree.color = color;
+    tree.mat = m;
+    tree.scale = scale;
     add_ent(tree);
-    give_ent_prop(&tree, EntProp_Selectable);
+    tree.orphan_pick_up = true;
 
     const f32 main_limbs[] = { 0.11f, 0.1f, 0.4f, 0.09f, 0.3f, };
     f32 a = 0.0f;
@@ -365,13 +498,13 @@ void spawn_tree(Vec3 pos) {
         Vec3 lscale = vec3(scale.x * (0.5f + af),
                            scale.y * af + 0.2f,
                            scale.z * (0.5f + af));
-        EntId limb = add_ent(tree);
-        get_ent(limb)->parent_mat = l;
-        get_ent(limb)->mat = scale4x4(lscale);
-        get_ent(limb)->parent = limb;
-        give_ent_prop(get_ent(limb), EntProp_Parent);
-        give_ent_prop(get_ent(limb), EntProp_Child);
-        tree.parent = limb;
+        Ent *limb = add_ent(tree);
+        limb->dbg_tag = DebugTag_Limb;
+        limb->mat = l;
+        limb->scale = lscale;
+        give_ent_prop(limb, EntProp_Selectable);
+        give_ent_prop(limb, EntProp_Whackable);
+
         const f32 boffset = 0.095f;
         for (f32 branch = boffset; branch < lscale.y; branch += 0.08f) {
             Mat4 b = translate4x4(mul3f(vec3_y(), branch));
@@ -381,54 +514,63 @@ void spawn_tree(Vec3 pos) {
             rot = mul4x4(rot, axis_angle4x4(vec3_x(), -PI32 * 0.1f));
             f32 twist = 0.3f;
 
-            Mat4 lb = mul4x4(b, axis_angle4x4(vec3_z(),  PI32 * twist));
-            lb = mul4x4(lb, rot);
-            EntId branch_l = add_ent(tree);
-            get_ent(branch_l)->mat = mul4x4(lb, scale4x4(bscale));
-            get_ent(limb)->children[get_ent(limb)->child_count++] = branch_l;
-            give_ent_prop(get_ent(branch_l), EntProp_Child);
+            Ent branch_e = tree;
+            branch_e.scale = bscale;
+            branch_e.parent = limb;
+            branch_e.prune_tag = PruneTag_Branch;
+            branch_e.dbg_tag = DebugTag_Branch;
 
-            Mat4 rb = mul4x4(b, axis_angle4x4(vec3_z(), -PI32 * twist));
-            rb = mul4x4(rb, rot);
-            EntId branch_r = add_ent(tree);
-            get_ent(branch_r)->mat = mul4x4(rb, scale4x4(bscale));
-            get_ent(limb)->children[get_ent(limb)->child_count++] = branch_r;
-            give_ent_prop(get_ent(branch_r), EntProp_Child);
+            Mat4 lb = mul4x4(mul4x4(b, axis_angle4x4(vec3_z(),  PI32 * twist)), rot);
+            Ent *branch_l = add_ent(branch_e);
+            branch_l->mat = lb;
+            add_ent_child(limb, branch_l);
+
+            Mat4 rb = mul4x4(mul4x4(b, axis_angle4x4(vec3_z(), -PI32 * twist)), rot);
+            Ent *branch_r = add_ent(branch_e);
+            branch_r->mat = rb;
+            add_ent_child(limb, branch_r);
 
             const f32 leoffset = 0.03f;
             for (f32 dir = -1.0; dir <= 1.0; dir += 2.0)
             for (f32 leaf = leoffset; leaf < bscale.y; leaf += 0.028f) {
-                Vec4 color = vec4(0.38f, 0.54f, 0.327f, 1.0f);
-                Mat4 pos         = translate4x4(vec3(        0.0f, leaf, 0.0f));
+                Mat4 pos = translate4x4(vec3(0.0f, leaf, 0.0f));
 
                 f32 dist = 1.0 - leaf / bscale.y;
                 Vec3 lescale = mul3f(vec3(0.025f, 0.002f, 0.015f), 0.6 + dist * 0.8);
                 Mat4 center_leaf = translate4x4(mul3(mul3f(vec3_x(), dir), lescale)),
                      rot = axis_angle4x4(vec3_x(), PI32 * (0.5 + dist * 0.3f));
                 rot = mul4x4(rot, axis_angle4x4(vec3_z(), PI32 * dist * 0.1f));
-                Mat4 leafter = mul4x4(mul4x4(rot, center_leaf), scale4x4(lescale));
+                Mat4 leafter = mul4x4(rot, center_leaf);
 
-                EntId leaf_l = add_ent(tree);
-                get_ent(leaf_l)->color = color;
-                get_ent(leaf_l)->mat = mul4x4(mul4x4(lb, pos), leafter);
-                get_ent(limb)->children[get_ent(limb)->child_count++] = leaf_l;
-                give_ent_prop(get_ent(leaf_l), EntProp_Child);
+                Ent leaf_ent = tree;
+                leaf_ent.scale = lescale;
+                leaf_ent.dbg_tag = DebugTag_Leaf;
+                leaf_ent.orphan_pick_up = false;
+                leaf_ent.prune_tag = PruneTag_Leaf;
+                leaf_ent.mass = 0.6 + 0.4 * randf();
+                leaf_ent.mat = mul4x4(pos, leafter);
+                leaf_ent.color = vec4(0.38f, 0.54f, 0.327f, 1.0f);
 
-                EntId leaf_r = add_ent(tree);
-                get_ent(leaf_r)->color = color;
-                get_ent(leaf_r)->mat = mul4x4(mul4x4(rb, pos), leafter);
-                get_ent(limb)->children[get_ent(limb)->child_count++] = leaf_r;
-                give_ent_prop(get_ent(leaf_r), EntProp_Child);
+                add_ent_child(branch_l, add_ent(leaf_ent));
+                add_ent_child(branch_r, add_ent(leaf_ent));
             }
         }
     }
 }
 
 void init(void) {
+    init_renderer();
+
+    srandf(9, 12, 32, 10);
+    world.ent_count = 0;
+
+    Ent player_ent = default_ent(DebugTag_Player);
+    player_ent.mat = translate4x4(vec3(0.0f, 1.0f, 0.0f));
+    player_ent.mass = 16.0f;
+    player_ent.independent_children = true;
     world.player = (Player) {
-        .pos = vec3(0.0f, 1.0f, 0.0f),
-        .vel = vec3f(0.0f),
-        .eye_height = 0.75,
+        .ent = add_ent(player_ent),
+        .eye_height = 0.75f,
         .cam_vel = vec2f(0.0f),
         .camera = (Camera) {
             .rotation = (Mat3) {
@@ -439,23 +581,22 @@ void init(void) {
             .pitch_deg = 0.0f,
             .yaw_deg = 0.0f,
         },
-        .grabbed = -1,
-        .equipped = -1,
+        .grabbed = NULL,
+        .equipped = NULL,
+        .swing_start = 0,
     };
-
-    init_renderer();
-
-    srand(9);
-    world.ent_count = 0;
+    give_ent_prop(world.player.ent, EntProp_Phys);
 
     Vec3 tree_pos = spawn_planet_with_tree();
     spawn_tree(tree_pos);
     
     stm_setup();
     world.start_time = stm_now();
+    world.dt = 0.0;
+    world.last_render = stm_now();
 }
 
-void event(const sapp_event* ev) {
+void event(const sapp_event *ev) {
     switch (ev->type) {
         case SAPP_EVENTTYPE_MOUSE_MOVE:;
             if (sapp_mouse_locked()) {
@@ -476,6 +617,10 @@ void event(const sapp_event* ev) {
             sapp_show_mouse(false);
             break;
         case SAPP_EVENTTYPE_KEY_DOWN:;
+            #ifndef NDEBUG
+                if (ev->key_code == SAPP_KEYCODE_ESCAPE)
+                    sapp_request_quit();
+            #endif
             if (!input.keys_down[(int) ev->key_code])
                 input.keys_pressed[(int) ev->key_code] = true;
             input.keys_down[(int) ev->key_code] = true;
@@ -487,94 +632,99 @@ void event(const sapp_event* ev) {
                 sapp_show_mouse(true);
             }
             break;
-        default:
+        default:;
             break;
     }
 }
 
 /* finds a limb that's under the mouse, gives it EntProp_Selected */
-EntId select_limb() {
+Ent *select_limb(EntProp filter, f32 scale) {
     Ray cam = (Ray) { .origin = player_eye(&world.player), 
                       .vector = cam_mat3(&world.player.camera).z };
     f32 hit_dist = 1.0;
-    EntId hit_ent = -1;
-    for (int i = 0; i < world.ent_count; i++) {
-        Ent *ent = get_ent(i);
-
-        take_ent_prop(ent, EntProp_Selected);
-        if (!has_ent_prop(ent, EntProp_Selectable))
+    Ent* hit_ent = NULL;
+    for (Ent *ent = 0; ent_world_iter(&ent);) {
+        if (!has_ent_prop(ent, filter))
             continue;
 
-        Vec3 new_hit_storage;
-        Vec3 *new_hit = &new_hit_storage;
-        ray_hit_cylinder(cam, get_ent_mat(ent), new_hit);
-        if (new_hit) {
-            f32 new_dist = magmag3(sub3(cam.origin, *new_hit));
+        Vec3 new_hit;
+        if (ray_hit_cylinder(cam, get_ent_mat(ent), &new_hit, scale)) {
+            f32 new_dist = magmag3(sub3(cam.origin, new_hit));
             if (new_dist < hit_dist) {
                 hit_dist = new_dist;
-                hit_ent = ent->parent;
+                hit_ent = ent;
             }
         }
-    }
-    if (hit_ent > -1) {
-        Ent *hit = get_ent(hit_ent);
-        give_ent_prop(hit, EntProp_Selected);
-        for (int i = 0; i < hit->child_count; i++)
-            give_ent_prop(get_ent(hit->children[i]), EntProp_Selected);
     }
 
     return hit_ent;
 }
 
-void grab_limbs(void) {
-    if (world.player.grabbed == -1 && world.player.equipped == -1) {
-        EntId limb_id = select_limb();
-        if (input.left_mb_down && limb_id > -1) {
-            Ent *limb = get_ent(limb_id);
-            if (!has_ent_prop(limb, EntProp_Grabbed)) {
-                world.player.grabbed = limb_id;
-                give_ent_prop(limb, EntProp_Grabbed);
-                limb->grab_start = stm_now();
-                limb->before_grab = limb->parent_mat;
+void prune_limb(Ent *limb, PruneTag tag, f32 percent) {
+    for (Ent *child = limb; child;)
+        if (child->prune_tag == tag && randf() < percent) {
+            Ent *cached_next = child->next ? child->next : child->parent;
+            detach_child(child);
+            child = cached_next;
+        } else
+            child = ent_tree_iter(child);
+}
+
+void grab_limbs(Player *plyr) {
+    for (Ent *ent = 0; ent_world_iter(&ent);)
+        take_ent_prop(ent, EntProp_Selected);
+
+    f64 delta = stm_sec(stm_since(plyr->last_grab_finish));
+    bool cooled_down = plyr->last_grab_finish ? delta > 1.0 : true;
+    if (plyr->grabbed == NULL && plyr->equipped == NULL && cooled_down) {
+        Ent *limb = select_limb(EntProp_Selectable, 4.0);
+
+        if (limb) {
+            give_ent_prop(limb, EntProp_Selected);
+
+            for (Ent *c = limb; c; c = ent_tree_iter(c))
+                give_ent_prop(c, EntProp_Selected);
+
+            if (input.left_mb_down && plyr->grabbed != limb) {
+                plyr->grabbed = limb;
+                limb->before_shake = limb->mat;
             }
         }
     }
-    if (!input.left_mb_down && world.player.grabbed > -1) {
-        get_ent(world.player.grabbed)->grab_stop = stm_now();
-        world.player.grabbed = -1;
-    }
-    for (int i = 0; i < world.ent_count; i++) {
-        Ent *ent = get_ent(i);
-        if (has_ent_prop(ent, EntProp_Grabbed)) {
-            f64 delta;
-            if (world.player.grabbed != i) {
-                delta = stm_sec(stm_diff(ent->grab_stop, ent->grab_start));
-            } else {
-                delta = stm_sec(stm_since(ent->grab_start));
-            }
-            f32 t = sin(delta * 10.0) * delta * 0.1;
+    if (plyr->grabbed)
+        if (!input.left_mb_down)
+            plyr->grabbed = NULL;
+        else {
+            Ent *grab = plyr->grabbed;
+            if (grab->shake_timer > 1.5) {
+                grab->shake_timer = 0.0;
+                prune_limb(plyr->grabbed, PruneTag_Leaf, 0.2);
+                take_ent_prop(grab, EntProp_Whackable);
 
-            if (world.player.grabbed != i) {
-                f64 elapsed = stm_sec(stm_since(ent->grab_stop));
-                t = lerp(t, elapsed, 0.0);
-                if (elapsed > 1.0) {
-                    take_ent_prop(ent, EntProp_Grabbed);
-                    ent->parent_mat = ent->before_grab;
-                    continue;
-                }
+                plyr->last_grab_finish = stm_now();
+
+                /* detach what's grabbed */
+                grab->pick_up = true;
+                grab->detach_time = stm_now();
+                grab->pick_up_start_pos = grab->mat.w.xyz;
+                plyr->grabbed = NULL;
+            } else {
+                give_ent_prop(grab, EntProp_Selected);
+                for (Ent *c = grab; c; c = ent_tree_iter(c))
+                    give_ent_prop(c, EntProp_Selected);
+                grab->shake_timer += world.dt * 2.0;
             }
+        }
+}
+
+void animate_shaking(void) {
+    for (Ent *ent = 0; ent_world_iter(&ent);) {
+        if (ent->shake_timer > 0.0) {
+            ent->shake_timer -= world.dt;
+            f32 t = sin(ent->shake_timer * 10.0) * ent->shake_timer * 0.1;
+
             Mat4 spin = axis_angle4x4(vec3_z(), t);
-            ent->parent_mat = mul4x4(ent->before_grab, spin);
-            if (delta > 1.5) {
-                take_ent_prop(ent, EntProp_Grabbed);
-                take_ent_prop(ent, EntProp_Selected);
-                for (int i = 0; i < ent->child_count; i++)
-                    take_ent_prop(get_ent(ent->children[i]), EntProp_Selected);
-                world.player.equipped = i;
-                world.player.equip_start = stm_now();
-                world.player.equip_grabbed = true;
-                world.player.equip_grab_start_pos = ent->parent_mat.w.xyz;
-            }
+            ent->mat = mul4x4(ent->before_shake, spin);
         }
     }
 }
@@ -590,7 +740,7 @@ void draw(Ent *ent) {
         case Art_Cylinder:;
             asset = ASSET_CYLINDER;
             break;
-        default:
+        default:;
             panic("unknown art");
             break;
     }
@@ -600,48 +750,173 @@ void draw(Ent *ent) {
     draw_asset(mat, asset, ent->color);
 }
 
-void frame(void) {
-    Vec3 planet = vec3f(0.0f);
-    Vec3 up = norm3(sub3(world.player.pos, planet));
+#define SWING_DUR 1.0f
+void control_player_equipped(Player *plyr, Vec3 player_up) {
+    if (input.left_mb_down && !plyr->swing) {
+        plyr->swing_start = stm_now();
+        plyr->swing = SwingState_PreAct;
+    }
 
-    grab_limbs();
-    update_player(&world.player, up);
+    f64 swing_d = stm_sec(stm_since(plyr->swing_start));
+    if (plyr->swing == SwingState_PreAct && swing_d > 0.61) {
+        plyr->swing = SwingState_PostAct;
 
-    start_render(player_view(&world.player));
-    if (world.player.equipped > -1) {
-        Player *plyr = &world.player;
-        Ent *equip = get_ent(plyr->equipped);
-        Mat4 *mat = &equip->parent_mat;
-        f64 delta = stm_sec(stm_since(plyr->equip_start));
+        Ent *hit = select_limb(EntProp_Whackable, 5.5);
+        if (hit) {
+            int child_count = 0;
+            for (Ent *c = hit; c; c = ent_tree_iter(c))
+                child_count++;
 
-        if (plyr->equip_grabbed) {
-            f32 t = delta / 1.3f;
-            Vec3 start = plyr->equip_grab_start_pos,
-                  neck = sub3(player_eye(plyr), mul3f(up, 0.4f));
-            mat->w.xyz = lerp3(start, ease_in_expo(t), neck);
-            if (t >= 1.0f) {
-                plyr->equip_grabbed = false;
-                plyr->equip_start = stm_now();
+            if (child_count < 10) {
+                detach_child(hit);
+                hit->orphan_pick_up = true;
+            } else {
+                prune_limb(plyr->equipped,   PruneTag_Leaf, 0.5);
+                prune_limb(           hit,   PruneTag_Leaf, 0.5);
+                prune_limb(plyr->equipped, PruneTag_Branch, 0.3);
+                prune_limb(           hit, PruneTag_Branch, 0.3);
+                hit->before_shake = hit->mat;
+                hit->shake_timer = 0.75;
             }
-        } else {
-            f32 breathe = sinf(delta * 1.7f) / 30.0f,
-                     in = fminf(delta * 0.17, 0.1);
-            Mat3 cam = cam_mat3(&plyr->camera);
-            Vec3 pos =      mul3f(cam.z,  0.180f);
-            pos = add3(pos, mul3f(cam.x,  0.110f));
-            pos = add3(pos, mul3f(cam.y, -0.170f + breathe * 0.01f + in));
-            pos = add3(pos, player_eye(plyr));
-            *mat = mat34x4(cam);
-            mat->w.xyz = pos;
-            *mat = mul4x4(*mat, axis_angle4x4(vec3_x(), 0.4f + breathe));
-            *mat = mul4x4(*mat, axis_angle4x4(vec3_y(), PI32 / 2.0f + breathe / 2.9f));
-            *mat = mul4x4(*mat, scale4x4(vec3f(0.3f)));
+        } else
+            prune_limb(plyr->equipped, PruneTag_Leaf, 0.2);
+    }
+    if (swing_d >= SWING_DUR)
+        plyr->swing = SwingState_NoSwing;
+}
+
+void animate_pick_up(Player *plyr, Vec3 up) {
+    for (Ent *ent = 0; ent_world_iter(&ent);) {
+        bool orphan = ent->parent == NULL && ent->first_child == NULL;
+        bool adopt = orphan && ent->orphan_pick_up;
+        if (ent->pick_up || adopt) {
+            f64 detach_d = stm_sec(stm_since(ent->detach_time));
+            f32 t = detach_d / 0.7;
+            Vec3 start = ent->pick_up_start_pos,
+                  neck = sub3(player_eye(plyr), mul3f(up, 0.6f));
+            ent->mat.w.xyz = lerp3(start, ease_in_expo(t), neck);
+            if (t >= 1.0f) {
+                ent->pick_up = false;
+                ent->orphan_pick_up = false;
+                add_ent_child(plyr->ent, ent);
+                if (plyr->equipped == NULL) {
+                    plyr->equipped = ent;
+                    plyr->equip_start = stm_now();
+                } else {
+                    give_ent_prop(ent, EntProp_Hidden);
+                }
+            }
         }
     }
-    for (int i = 0; i < world.ent_count; i++)
-        draw(get_ent(i));
+}
+
+void animate_equipped(Player *plyr) {
+    Ent *equip = plyr->equipped;
+    Mat4 *mat = &equip->mat;
+    f64 start_d = stm_sec(stm_since(plyr->equip_start)),
+        swing_d = stm_sec(stm_since(world.player.swing_start));
+
+    Vec3 pos = vec3(0.210f, -0.230f, 0.290f);
+    f32 breathe = sinf(start_d * 1.7f) / 15.0f;
+    pos.y += breathe * 0.005f;
+    Quat rotq = yprQ(PI32 / 4.0f + 0.8f + breathe, -0.4f, breathe / 2.9f);
+
+    if (plyr->swing) {
+        typedef struct {
+            f32 duration;
+            Quat rot;
+            Vec3 pos;
+        } KeyFrame;
+
+        KeyFrame default_kf = { 0.0f, identQ(), vec3f(0.0f) };
+        KeyFrame keyframes[] = {
+            {2.0f, yprQ( 1.0f, -1.0f, 0.0f), vec3(-0.24f, 0.10f, 0.02f)},/* move to left   */
+            {2.3f, yprQ(-0.5f, -1.0f, 0.0f), vec3(-0.34f, 0.10f, 0.05f)},/* wind up        */
+            {1.0f, yprQ( 2.0f, -1.4f, 0.0f), vec3(-0.12f, 0.10f, 0.06f)},/* swing          */
+            {1.0f, yprQ( 3.5f, -1.6f, 0.0f), vec3(-0.08f, 0.10f, 0.06f)},/* follow through */
+            {2.0f, yprQ( 0.0f,  0.0f, 0.0f), vec3( 0.00f, 0.00f, 0.00f)},/* back home      */
+        };
+
+        f32 total = 0.0;
+        for (int i = 0; i < LEN(keyframes); i++)
+            total += keyframes[i].duration;
+
+        for (int i = 0; i < LEN(keyframes); i++) {
+            KeyFrame next = keyframes[i],
+                     last = i == 0 ? default_kf : keyframes[i - 1];
+            f32 duration = (next.duration / total) * SWING_DUR;
+            if (swing_d <= duration) {
+                f32 t = swing_d / duration;
+                rotq = mulQ(rotq, slerpQ(last.rot, t, next.rot));
+                pos = add3(pos, lerp3(last.pos, t, next.pos));
+                break;
+            }
+            swing_d -= duration;
+        }
+    }
+
+    Mat3 cam = cam_mat3(&plyr->camera);
+    Vec3 p =  player_eye(plyr);
+    p = add3(p, mul3f(cam.x, pos.x));
+    p = add3(p, mul3f(cam.y, pos.y + fminf(start_d * 0.17f, EQUIP_LOAD_SECS)));
+    p = add3(p, mul3f(cam.z, pos.z));
+    *mat = mat34x4(cam);
+    mat->w.xyz = p;
+    *mat = mul4x4(*mat, quat4x4(rotq));
+}
+
+const f32 planet_mass = 100.0;
+const Vec3 planet = { 0.0f, 0.0f, 0.0f };
+void gravity_physics(void) {
+    for (Ent *ent = 0; ent_world_iter(&ent);)
+        if (has_ent_prop(ent, EntProp_Phys)) {
+            Mat4 total_mat = get_ent_mat(ent);
+            f32 dist = mag3(total_mat.w.xyz),
+                mass_g = 6.67e-6 * ent->mass * planet_mass;
+            Vec3 up = norm3(sub3(total_mat.w.xyz, planet));
+            Mat3 bases = ortho_bases3x3(up);
+            ent->vel = add3(ent->vel, mul3f(up, -mass_g / (dist * dist)));
+
+            if (dist < 1.1f) {
+                f32 depth = 1.1f - dist;
+                ent->mat.w.xyz = add3(ent->mat.w.xyz, mul3f(up, depth));
+                ent->vel = add3(ent->vel, mul3f(up, depth * 0.01f));
+            } else if (ent->mass <= 1.0) {
+                f32 spiral = 0.000008f * fmaxf(world.roll, 1.0);
+                ent->vel = add3(ent->vel, mul3f(bases.x, sinf(world.roll) * spiral));
+                ent->vel = add3(ent->vel, mul3f(bases.z, cosf(world.roll) * spiral));
+            }
+
+            ent->acc = mul3f(ent->acc, 0.92f);
+            ent->vel = add3(ent->vel, ent->acc);
+            ent->vel = mul3f(ent->vel, 0.87f);
+            ent->mat.w.xyz = add3(ent->mat.w.xyz, ent->vel);
+        }
+}
+
+void frame(void) {
+    Vec3 player_up = norm3(sub3(world.player.ent->mat.w.xyz, planet));
+
+    grab_limbs(&world.player);
+    control_player_movement(&world.player, player_up);
+    if (player_equipped(&world.player))
+        control_player_equipped(&world.player, player_up);
+
+    gravity_physics();
+
+    start_render(player_view(&world.player));
+    if (player_equipped(&world.player))
+        animate_equipped(&world.player);
+    animate_pick_up(&world.player, player_up);
+    animate_shaking();
+    for (Ent *ent = 0; ent_world_iter(&ent);)
+        if (!has_ent_prop(ent, EntProp_Hidden))
+            draw(ent);
 
     end_render();
+    world.dt = stm_sec(stm_since(world.last_render));
+    world.roll = wrap(world.roll + (f32) world.dt, 1.0);
+    world.last_render = stm_now();
 
     for (int i = 0; i < LEN(input.keys_pressed); i++)
         input.keys_pressed[i] = false;
@@ -651,7 +926,7 @@ void cleanup(void) {
     sg_shutdown();
 }
 
-sapp_desc sokol_main(int argc, char* argv[]) {
+sapp_desc sokol_main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
 
